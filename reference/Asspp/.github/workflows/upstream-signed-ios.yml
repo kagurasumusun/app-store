@@ -1,0 +1,707 @@
+name: Upstream Signed iOS Build
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      source_kind:
+        description: "Build source repository"
+        required: false
+        type: choice
+        options:
+          - upstream
+          - fork
+        default: upstream
+      source_branch:
+        description: "Branch name to build (e.g. main)"
+        required: false
+        type: string
+        default: main
+      source_repo:
+        description: "Source repository when source_kind=upstream (owner/repo)"
+        required: false
+        type: string
+        default: Lakr233/Asspp
+      force_build:
+        description: "Force build even if release tag already exists"
+        required: false
+        type: boolean
+        default: true
+      upstream_ref:
+        description: "Legacy override git ref (e.g. refs/heads/main)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: upstream-signed-ios
+  cancel-in-progress: false
+
+jobs:
+  detect-upstream:
+    if: github.repository != 'Lakr233/Asspp'
+    runs-on: ubuntu-latest
+    outputs:
+      upstream_sha: ${{ steps.detect.outputs.upstream_sha }}
+      source_repo: ${{ steps.detect.outputs.source_repo }}
+      source_ref: ${{ steps.detect.outputs.source_ref }}
+      source_kind: ${{ steps.detect.outputs.source_kind }}
+      short_sha: ${{ steps.detect.outputs.short_sha }}
+      tag_name: ${{ steps.detect.outputs.tag_name }}
+      should_build: ${{ steps.detect.outputs.should_build }}
+      release_exists: ${{ steps.detect.outputs.release_exists }}
+    steps:
+      - name: Detect source commit
+        id: detect
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_KIND_INPUT: ${{ github.event.inputs.source_kind }}
+          SOURCE_BRANCH_INPUT: ${{ github.event.inputs.source_branch }}
+          SOURCE_REPO_INPUT: ${{ github.event.inputs.source_repo }}
+          FORCE_BUILD_INPUT: ${{ github.event.inputs.force_build }}
+          UPSTREAM_REF_INPUT: ${{ github.event.inputs.upstream_ref }}
+        run: |
+          set -euo pipefail
+
+          EVENT_NAME="${GITHUB_EVENT_NAME}"
+          DEFAULT_UPSTREAM_REPO="Lakr233/Asspp"
+          SOURCE_KIND="${SOURCE_KIND_INPUT:-upstream}"
+          LEGACY_REF_INPUT="${UPSTREAM_REF_INPUT:-}"
+          SOURCE_BRANCH_RAW="${SOURCE_BRANCH_INPUT:-}"
+          SOURCE_REPO_RAW="${SOURCE_REPO_INPUT:-$DEFAULT_UPSTREAM_REPO}"
+
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ "${SOURCE_KIND}" = "fork" ]; then
+              SOURCE_REPO="${GITHUB_REPOSITORY}"
+            else
+              SOURCE_REPO="${SOURCE_REPO_RAW}"
+            fi
+
+            if [ -n "${SOURCE_BRANCH_RAW}" ]; then
+              REQUESTED_REF="${SOURCE_BRANCH_RAW}"
+            elif [ -n "${LEGACY_REF_INPUT}" ]; then
+              REQUESTED_REF="${LEGACY_REF_INPUT}"
+            else
+              REQUESTED_REF="main"
+            fi
+          else
+            SOURCE_REPO="${DEFAULT_UPSTREAM_REPO}"
+            REQUESTED_REF="main"
+            SOURCE_KIND="upstream"
+          fi
+
+          if [[ "${REQUESTED_REF}" == refs/* ]]; then
+            SOURCE_REF="${REQUESTED_REF}"
+            SOURCE_BRANCH_FOR_TAG="${REQUESTED_REF#refs/heads/}"
+          else
+            SOURCE_REF="refs/heads/${REQUESTED_REF}"
+            SOURCE_BRANCH_FOR_TAG="${REQUESTED_REF}"
+          fi
+
+          FORCE_BUILD="${FORCE_BUILD_INPUT:-false}"
+
+          SOURCE_SHA=$(git ls-remote "https://github.com/${SOURCE_REPO}.git" "${SOURCE_REF}" | awk 'NR == 1 { print $1 }')
+          if [ -z "${SOURCE_SHA}" ]; then
+            echo "Failed to resolve source ref: ${SOURCE_REPO} ${SOURCE_REF}"
+            exit 1
+          fi
+
+          SHORT_SHA="${SOURCE_SHA:0:7}"
+          SAFE_BRANCH=$(echo "${SOURCE_BRANCH_FOR_TAG}" | tr '/._ ' '-' | tr -cd '[:alnum:]-')
+          SAFE_BRANCH="${SAFE_BRANCH:-main}"
+
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ "${SOURCE_KIND}" = "fork" ]; then
+              TAG_NAME="manual-fork-${SAFE_BRANCH}-${SHORT_SHA}"
+            else
+              TAG_NAME="manual-upstream-${SAFE_BRANCH}-${SHORT_SHA}"
+            fi
+          else
+            TAG_NAME="upstream-main-${SHORT_SHA}"
+          fi
+
+          API_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}"
+          HTTP_CODE=$(curl -sS -o /tmp/release.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${API_URL}")
+
+          if [ "${HTTP_CODE}" = "200" ]; then
+            RELEASE_EXISTS="true"
+          elif [ "${HTTP_CODE}" = "404" ]; then
+            RELEASE_EXISTS="false"
+          else
+            echo "GitHub API returned unexpected status: ${HTTP_CODE}"
+            cat /tmp/release.json
+            exit 1
+          fi
+
+          SHOULD_BUILD="false"
+          if [ "${FORCE_BUILD}" = "true" ] || [ "${RELEASE_EXISTS}" = "false" ]; then
+            SHOULD_BUILD="true"
+          fi
+
+          {
+            echo "upstream_sha=${SOURCE_SHA}"
+            echo "source_repo=${SOURCE_REPO}"
+            echo "source_ref=${SOURCE_REF}"
+            echo "source_kind=${SOURCE_KIND}"
+            echo "short_sha=${SHORT_SHA}"
+            echo "tag_name=${TAG_NAME}"
+            echo "release_exists=${RELEASE_EXISTS}"
+            echo "should_build=${SHOULD_BUILD}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Source Detection"
+            echo "- Source kind: \`${SOURCE_KIND}\`"
+            echo "- Source repo: \`${SOURCE_REPO}\`"
+            echo "- Source ref: \`${SOURCE_REF}\`"
+            echo "- Source SHA: \`${SOURCE_SHA}\`"
+            echo "- Release tag: \`${TAG_NAME}\`"
+            echo "- Existing release: \`${RELEASE_EXISTS}\`"
+            echo "- Build this run: \`${SHOULD_BUILD}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-release:
+    needs: detect-upstream
+    if: needs.detect-upstream.outputs.should_build == 'true'
+    runs-on: macos-26
+    outputs:
+      release_url: ${{ steps.publish.outputs.release_url }}
+      pages_base_url: ${{ steps.pages.outputs.pages_base_url }}
+      pages_install_url: ${{ steps.pages.outputs.pages_install_url }}
+      pages_manifest_url: ${{ steps.pages.outputs.pages_manifest_url }}
+    env:
+      UPSTREAM_SHA: ${{ needs.detect-upstream.outputs.upstream_sha }}
+      SOURCE_REPO: ${{ needs.detect-upstream.outputs.source_repo }}
+      SOURCE_REF: ${{ needs.detect-upstream.outputs.source_ref }}
+      SHORT_SHA: ${{ needs.detect-upstream.outputs.short_sha }}
+      TAG_NAME: ${{ needs.detect-upstream.outputs.tag_name }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ env.UPSTREAM_SHA }}
+          path: source
+          fetch-depth: 1
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          for XCODE_APP in \
+            /Applications/Xcode_26.2.app \
+            /Applications/Xcode_16.4.app \
+            /Applications/Xcode_16.3.app \
+            /Applications/Xcode.app
+          do
+            if [ -d "${XCODE_APP}" ]; then
+              sudo xcode-select -s "${XCODE_APP}"
+              break
+            fi
+          done
+          xcodebuild -version
+
+      - name: Install signing assets
+        id: signing
+        env:
+          CERT_P12_BASE64: ${{ secrets.IOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
+          PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
+          TEAM_ID_OVERRIDE: ${{ secrets.IOS_TEAM_ID }}
+          BUNDLE_ID_OVERRIDE: ${{ vars.IOS_BUNDLE_ID }}
+          SIGNING_IDENTITY_OVERRIDE: ${{ vars.IOS_SIGNING_IDENTITY }}
+          EXPORT_METHOD_OVERRIDE: ${{ vars.IOS_EXPORT_METHOD }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CERT_P12_BASE64}" ] || [ -z "${CERT_PASSWORD}" ] || [ -z "${PROFILE_BASE64}" ]; then
+            echo "Missing required secrets: IOS_CERT_P12_BASE64, IOS_CERT_PASSWORD, IOS_PROVISIONING_PROFILE_BASE64"
+            exit 1
+          fi
+
+          CERT_PATH="${RUNNER_TEMP}/signing.p12"
+          PROFILE_PATH="${RUNNER_TEMP}/profile.mobileprovision"
+          PROFILE_PLIST="${RUNNER_TEMP}/profile.plist"
+          KEYCHAIN_PATH="${RUNNER_TEMP}/signing.keychain-db"
+          KEYCHAIN_PASS="${KEYCHAIN_PASSWORD:-temp-keychain-password}"
+
+          if printf 'dGVzdA==' | base64 --decode >/dev/null 2>&1; then
+            printf '%s' "${CERT_P12_BASE64}" | base64 --decode > "${CERT_PATH}"
+            printf '%s' "${PROFILE_BASE64}" | base64 --decode > "${PROFILE_PATH}"
+          else
+            printf '%s' "${CERT_P12_BASE64}" | base64 -D > "${CERT_PATH}"
+            printf '%s' "${PROFILE_BASE64}" | base64 -D > "${PROFILE_PATH}"
+          fi
+
+          security create-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_PATH}"
+          security import "${CERT_PATH}" -P "${CERT_PASSWORD}" -A -t cert -f pkcs12 -k "${KEYCHAIN_PATH}"
+          security set-key-partition-list -S apple-tool:,apple: -k "${KEYCHAIN_PASS}" "${KEYCHAIN_PATH}"
+
+          EXISTING_KEYCHAINS=$(security list-keychains -d user | tr -d '"')
+          security list-keychains -d user -s "${KEYCHAIN_PATH}" ${EXISTING_KEYCHAINS}
+          security default-keychain -d user -s "${KEYCHAIN_PATH}"
+
+          security cms -D -i "${PROFILE_PATH}" > "${PROFILE_PLIST}"
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" "${PROFILE_PLIST}")
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print Name" "${PROFILE_PLIST}")
+          PROFILE_TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print TeamIdentifier:0" "${PROFILE_PLIST}")
+          PROFILE_APP_IDENTIFIER=$(/usr/libexec/PlistBuddy -c "Print Entitlements:application-identifier" "${PROFILE_PLIST}" 2>/dev/null || true)
+
+          mkdir -p "${HOME}/Library/MobileDevice/Provisioning Profiles"
+          cp "${PROFILE_PATH}" "${HOME}/Library/MobileDevice/Provisioning Profiles/${PROFILE_UUID}.mobileprovision"
+
+          DEFAULT_BUNDLE_ID=$(awk -F '=' '/^PRODUCT_BUNDLE_IDENTIFIER/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' source/Configuration/Base.xcconfig)
+          BUNDLE_ID="${BUNDLE_ID_OVERRIDE:-${DEFAULT_BUNDLE_ID}}"
+          TEAM_ID="${TEAM_ID_OVERRIDE:-${PROFILE_TEAM_ID}}"
+          EXPORT_METHOD="${EXPORT_METHOD_OVERRIDE:-ad-hoc}"
+
+          PROFILE_BUNDLE_ID=""
+          if [ -n "${PROFILE_APP_IDENTIFIER}" ]; then
+            PROFILE_BUNDLE_ID="${PROFILE_APP_IDENTIFIER#*.}"
+          fi
+
+          if [ -n "${PROFILE_BUNDLE_ID}" ]; then
+            if [[ "${PROFILE_BUNDLE_ID}" = "*" ]]; then
+              true
+            elif [[ "${PROFILE_BUNDLE_ID}" = *"*" ]]; then
+              PROFILE_PREFIX="${PROFILE_BUNDLE_ID%\*}"
+              if [[ "${BUNDLE_ID}" != "${PROFILE_PREFIX}"* ]]; then
+                echo "Provisioning profile app identifier does not match bundle id."
+                echo "Profile: ${PROFILE_BUNDLE_ID}, Bundle: ${BUNDLE_ID}"
+                exit 1
+              fi
+            elif [ "${PROFILE_BUNDLE_ID}" != "${BUNDLE_ID}" ]; then
+              echo "Provisioning profile app identifier does not match bundle id."
+              echo "Profile: ${PROFILE_BUNDLE_ID}, Bundle: ${BUNDLE_ID}"
+              exit 1
+            fi
+          fi
+
+          if [ -n "${SIGNING_IDENTITY_OVERRIDE}" ]; then
+            SIGNING_IDENTITY="${SIGNING_IDENTITY_OVERRIDE}"
+          elif [ "${EXPORT_METHOD}" = "development" ]; then
+            SIGNING_IDENTITY="Apple Development"
+          else
+            SIGNING_IDENTITY="Apple Distribution"
+          fi
+
+          if [ "${BUNDLE_ID}" != "${DEFAULT_BUNDLE_ID}" ]; then
+            /usr/libexec/PlistBuddy -c "Set :keychain-access-groups:0 \$(AppIdentifierPrefix)${BUNDLE_ID}" source/Asspp/Asspp.entitlements
+          fi
+
+          cat > source/Configuration/Developer.xcconfig <<EOF
+          // CI-generated Developer.xcconfig
+          DEVELOPMENT_TEAM = ${TEAM_ID}
+          CODE_SIGN_STYLE = Manual
+          CODE_SIGN_IDENTITY = ${SIGNING_IDENTITY}
+          CODE_SIGN_IDENTITY[sdk=macosx*] = Apple Development
+          PROVISIONING_PROFILE_SPECIFIER = ${PROFILE_NAME}
+          PROVISIONING_PROFILE = ${PROFILE_UUID}
+          PRODUCT_BUNDLE_IDENTIFIER = ${BUNDLE_ID}
+          EOF
+
+          {
+            echo "team_id=${TEAM_ID}"
+            echo "bundle_id=${BUNDLE_ID}"
+            echo "profile_name=${PROFILE_NAME}"
+            echo "export_method=${EXPORT_METHOD}"
+            echo "build_number=${GITHUB_RUN_NUMBER}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Archive iOS app
+        working-directory: source
+        env:
+          BUILD_NUMBER: ${{ steps.signing.outputs.build_number }}
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          xcodebuild \
+            -workspace Asspp.xcworkspace \
+            -scheme Asspp \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "${PWD}/build/Asspp.xcarchive" \
+            clean archive \
+            CURRENT_PROJECT_VERSION="${BUILD_NUMBER}"
+
+      - name: Export signed IPA
+        id: export
+        working-directory: source
+        env:
+          TEAM_ID: ${{ steps.signing.outputs.team_id }}
+          BUNDLE_ID: ${{ steps.signing.outputs.bundle_id }}
+          PROFILE_NAME: ${{ steps.signing.outputs.profile_name }}
+          EXPORT_METHOD: ${{ steps.signing.outputs.export_method }}
+          SHORT_SHA: ${{ env.SHORT_SHA }}
+        run: |
+          set -euo pipefail
+
+          cat > "${PWD}/build/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>destination</key>
+            <string>export</string>
+            <key>method</key>
+            <string>${EXPORT_METHOD}</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>teamID</key>
+            <string>${TEAM_ID}</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${BUNDLE_ID}</key>
+              <string>${PROFILE_NAME}</string>
+            </dict>
+            <key>stripSwiftSymbols</key>
+            <true/>
+            <key>compileBitcode</key>
+            <false/>
+            <key>thinning</key>
+            <string>&lt;none&gt;</string>
+          </dict>
+          </plist>
+          EOF
+
+          xcodebuild -exportArchive \
+            -archivePath "${PWD}/build/Asspp.xcarchive" \
+            -exportPath "${PWD}/build/export" \
+            -exportOptionsPlist "${PWD}/build/ExportOptions.plist"
+
+          IPA_PATH=$(find "${PWD}/build/export" -maxdepth 1 -name "*.ipa" | head -n 1)
+          if [ -z "${IPA_PATH}" ]; then
+            echo "No IPA produced."
+            exit 1
+          fi
+
+          NAMED_IPA="${RUNNER_TEMP}/Asspp-${SHORT_SHA}.ipa"
+          cp "${IPA_PATH}" "${NAMED_IPA}"
+          echo "ipa_path=${NAMED_IPA}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release assets
+        id: assets
+        env:
+          TAG_NAME: ${{ env.TAG_NAME }}
+          SHORT_SHA: ${{ env.SHORT_SHA }}
+          IPA_PATH: ${{ steps.export.outputs.ipa_path }}
+          BUNDLE_ID: ${{ steps.signing.outputs.bundle_id }}
+          BUILD_NUMBER: ${{ steps.signing.outputs.build_number }}
+          SOURCE_REPO: ${{ env.SOURCE_REPO }}
+          SOURCE_REF: ${{ env.SOURCE_REF }}
+          UPSTREAM_SHA: ${{ env.UPSTREAM_SHA }}
+        run: |
+          set -euo pipefail
+
+          IPA_NAME="Asspp-${SHORT_SHA}.ipa"
+          MANIFEST_NAME="Asspp-${SHORT_SHA}.plist"
+          INSTALL_NAME="install-${SHORT_SHA}.html"
+          NOTES_NAME="release-notes-${SHORT_SHA}.md"
+
+          RELEASE_BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}"
+          IPA_URL="${RELEASE_BASE_URL}/${IPA_NAME}"
+          MANIFEST_URL="${RELEASE_BASE_URL}/${MANIFEST_NAME}"
+          OTA_URL="itms-services://?action=download-manifest&url=${MANIFEST_URL}"
+
+          MANIFEST_PATH="${RUNNER_TEMP}/${MANIFEST_NAME}"
+          cat > "${MANIFEST_PATH}" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>items</key>
+            <array>
+              <dict>
+                <key>assets</key>
+                <array>
+                  <dict>
+                    <key>kind</key>
+                    <string>software-package</string>
+                    <key>url</key>
+                    <string>${IPA_URL}</string>
+                  </dict>
+                </array>
+                <key>metadata</key>
+                <dict>
+                  <key>bundle-identifier</key>
+                  <string>${BUNDLE_ID}</string>
+                  <key>bundle-version</key>
+                  <string>${BUILD_NUMBER}</string>
+                  <key>kind</key>
+                  <string>software</string>
+                  <key>title</key>
+                  <string>Asspp</string>
+                </dict>
+              </dict>
+            </array>
+          </dict>
+          </plist>
+          EOF
+
+          INSTALL_PATH="${RUNNER_TEMP}/${INSTALL_NAME}"
+          cat > "${INSTALL_PATH}" <<EOF
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>Install Asspp</title>
+            </head>
+            <body>
+              <h1>Install Asspp</h1>
+              <p>Source: ${SOURCE_REPO} (${SOURCE_REF})</p>
+              <p>Commit: ${UPSTREAM_SHA}</p>
+              <p><a href="${OTA_URL}">Tap here to install/update</a></p>
+              <p>If installation fails, verify your provisioning profile includes this device UDID and trust the certificate in Settings.</p>
+            </body>
+          </html>
+          EOF
+
+          NOTES_PATH="${RUNNER_TEMP}/${NOTES_NAME}"
+          cat > "${NOTES_PATH}" <<EOF
+          Automated signed iOS build from source \`${SOURCE_REPO}\`.
+
+          - Source ref: \`${SOURCE_REF}\`
+          - Source commit: \`${UPSTREAM_SHA}\`
+          - Bundle ID: \`${BUNDLE_ID}\`
+          - Build number: \`${BUILD_NUMBER}\`
+          - OTA install link: \`${OTA_URL}\`
+          EOF
+
+          {
+            echo "ipa_name=${IPA_NAME}"
+            echo "manifest_name=${MANIFEST_NAME}"
+            echo "install_name=${INSTALL_NAME}"
+            echo "ipa_path=${IPA_PATH}"
+            echo "manifest_path=${MANIFEST_PATH}"
+            echo "install_path=${INSTALL_PATH}"
+            echo "notes_path=${NOTES_PATH}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub release
+        id: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ env.TAG_NAME }}
+          SHORT_SHA: ${{ env.SHORT_SHA }}
+          IPA_NAME: ${{ steps.assets.outputs.ipa_name }}
+          MANIFEST_NAME: ${{ steps.assets.outputs.manifest_name }}
+          INSTALL_NAME: ${{ steps.assets.outputs.install_name }}
+          IPA_PATH: ${{ steps.assets.outputs.ipa_path }}
+          MANIFEST_PATH: ${{ steps.assets.outputs.manifest_path }}
+          INSTALL_PATH: ${{ steps.assets.outputs.install_path }}
+          NOTES_PATH: ${{ steps.assets.outputs.notes_path }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${TAG_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "Asspp signed iOS (${SHORT_SHA})" \
+              --notes-file "${NOTES_PATH}"
+          else
+            gh release create "${TAG_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "Asspp signed iOS (${SHORT_SHA})" \
+              --notes-file "${NOTES_PATH}"
+          fi
+
+          gh release upload "${TAG_NAME}" \
+            "${IPA_PATH}#${IPA_NAME}" \
+            "${MANIFEST_PATH}#${MANIFEST_NAME}" \
+            "${INSTALL_PATH}#${INSTALL_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
+
+          echo "release_url=https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate GitHub Pages files
+        id: pages
+        env:
+          TAG_NAME: ${{ env.TAG_NAME }}
+          SHORT_SHA: ${{ env.SHORT_SHA }}
+          BUNDLE_ID: ${{ steps.signing.outputs.bundle_id }}
+          BUILD_NUMBER: ${{ steps.signing.outputs.build_number }}
+          SOURCE_REPO: ${{ env.SOURCE_REPO }}
+          SOURCE_REF: ${{ env.SOURCE_REF }}
+          UPSTREAM_SHA: ${{ env.UPSTREAM_SHA }}
+          IPA_NAME: ${{ steps.assets.outputs.ipa_name }}
+          RELEASE_URL: ${{ steps.publish.outputs.release_url }}
+          PAGES_BASE_URL_OVERRIDE: ${{ vars.IOS_OTA_BASE_URL }}
+        run: |
+          set -euo pipefail
+
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          DEFAULT_PAGES_BASE_URL="https://${GITHUB_REPOSITORY_OWNER}.github.io"
+          if [ "${REPO_NAME}" != "${GITHUB_REPOSITORY_OWNER}.github.io" ]; then
+            DEFAULT_PAGES_BASE_URL="${DEFAULT_PAGES_BASE_URL}/${REPO_NAME}"
+          fi
+
+          PAGES_BASE_URL="${PAGES_BASE_URL_OVERRIDE:-${DEFAULT_PAGES_BASE_URL}}"
+          PAGES_BASE_URL="${PAGES_BASE_URL%/}"
+
+          RELEASE_BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}"
+          IPA_URL="${RELEASE_BASE_URL}/${IPA_NAME}"
+
+          SITE_PATH="${RUNNER_TEMP}/pages-site"
+          LATEST_DIR="${SITE_PATH}/ios/latest"
+          SHA_DIR="${SITE_PATH}/ios/${SHORT_SHA}"
+          mkdir -p "${LATEST_DIR}" "${SHA_DIR}"
+
+          LATEST_MANIFEST_URL="${PAGES_BASE_URL}/ios/latest/manifest.plist"
+          SHA_MANIFEST_URL="${PAGES_BASE_URL}/ios/${SHORT_SHA}/manifest.plist"
+          LATEST_OTA_URL="itms-services://?action=download-manifest&url=${LATEST_MANIFEST_URL}"
+          SHA_OTA_URL="itms-services://?action=download-manifest&url=${SHA_MANIFEST_URL}"
+
+          cat > "${LATEST_DIR}/manifest.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>items</key>
+            <array>
+              <dict>
+                <key>assets</key>
+                <array>
+                  <dict>
+                    <key>kind</key>
+                    <string>software-package</string>
+                    <key>url</key>
+                    <string>${IPA_URL}</string>
+                  </dict>
+                </array>
+                <key>metadata</key>
+                <dict>
+                  <key>bundle-identifier</key>
+                  <string>${BUNDLE_ID}</string>
+                  <key>bundle-version</key>
+                  <string>${BUILD_NUMBER}</string>
+                  <key>kind</key>
+                  <string>software</string>
+                  <key>title</key>
+                  <string>Asspp</string>
+                </dict>
+              </dict>
+            </array>
+          </dict>
+          </plist>
+          EOF
+
+          cp "${LATEST_DIR}/manifest.plist" "${SHA_DIR}/manifest.plist"
+
+          cat > "${LATEST_DIR}/install.html" <<EOF
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>Install Asspp</title>
+            </head>
+            <body>
+              <h1>Install Asspp (Latest)</h1>
+              <p>Source: ${SOURCE_REPO} (${SOURCE_REF})</p>
+              <p>Commit: ${UPSTREAM_SHA}</p>
+              <p><a href="${LATEST_OTA_URL}">Tap to install or update</a></p>
+              <p><a href="${RELEASE_URL}">Release details</a></p>
+              <p><a href="${IPA_URL}">Direct IPA download</a></p>
+            </body>
+          </html>
+          EOF
+
+          cat > "${SHA_DIR}/install.html" <<EOF
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>Install Asspp ${SHORT_SHA}</title>
+            </head>
+            <body>
+              <h1>Install Asspp (${SHORT_SHA})</h1>
+              <p>Source: ${SOURCE_REPO} (${SOURCE_REF})</p>
+              <p>Commit: ${UPSTREAM_SHA}</p>
+              <p><a href="${SHA_OTA_URL}">Tap to install this version</a></p>
+              <p><a href="${RELEASE_URL}">Release details</a></p>
+              <p><a href="${IPA_URL}">Direct IPA download</a></p>
+            </body>
+          </html>
+          EOF
+
+          cat > "${SITE_PATH}/index.html" <<EOF
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>Asspp OTA</title>
+            </head>
+            <body>
+              <h1>Asspp OTA</h1>
+              <p>Latest install page: <a href="${PAGES_BASE_URL}/ios/latest/install.html">${PAGES_BASE_URL}/ios/latest/install.html</a></p>
+              <p>This build: <a href="${PAGES_BASE_URL}/ios/${SHORT_SHA}/install.html">${PAGES_BASE_URL}/ios/${SHORT_SHA}/install.html</a></p>
+              <p>Release: <a href="${RELEASE_URL}">${RELEASE_URL}</a></p>
+            </body>
+          </html>
+          EOF
+
+          {
+            echo "pages_base_url=${PAGES_BASE_URL}"
+            echo "pages_install_url=${PAGES_BASE_URL}/ios/latest/install.html"
+            echo "pages_manifest_url=${PAGES_BASE_URL}/ios/latest/manifest.plist"
+            echo "site_path=${SITE_PATH}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ steps.pages.outputs.site_path }}
+
+      - name: Build summary
+        env:
+          RELEASE_URL: ${{ steps.publish.outputs.release_url }}
+          PAGES_INSTALL_URL: ${{ steps.pages.outputs.pages_install_url }}
+          PAGES_MANIFEST_URL: ${{ steps.pages.outputs.pages_manifest_url }}
+        run: |
+          {
+            echo "### Signed Build Published"
+            echo "- Release: ${RELEASE_URL}"
+            echo "- OTA install page: ${PAGES_INSTALL_URL}"
+            echo "- OTA manifest: ${PAGES_MANIFEST_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-pages:
+    needs:
+      - detect-upstream
+      - build-release
+    if: needs.detect-upstream.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Deployment summary
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+          INSTALL_URL: ${{ needs.build-release.outputs.pages_install_url }}
+          MANIFEST_URL: ${{ needs.build-release.outputs.pages_manifest_url }}
+        run: |
+          {
+            echo "### GitHub Pages Deployed"
+            echo "- Pages URL: ${PAGE_URL}"
+            echo "- Latest install page: ${INSTALL_URL}"
+            echo "- Latest manifest: ${MANIFEST_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,113 @@
+name: Build App
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-ios:
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select newest non-beta Xcode
+        run: |
+          set -euo pipefail
+          best_path=""
+          best_ver=""
+          for app in /Applications/Xcode*.app; do
+            [ -d "$app" ] || continue
+            info="$app/Contents/Info.plist"
+            [ -f "$info" ] || continue
+            # Skip beta/release-candidate installs.
+            case "$(printf '%s' "$app" | tr '[:upper:]' '[:lower:]')" in
+              *beta*|*_rc*) continue ;;
+            esac
+            ver="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info" 2>/dev/null || true)"
+            [ -n "$ver" ] || continue
+            if [ -z "$best_ver" ] || [ "$(printf '%s\n%s\n' "$best_ver" "$ver" | sort -V | tail -1)" = "$ver" ]; then
+              best_ver="$ver"
+              best_path="$app"
+            fi
+          done
+          if [ -z "$best_path" ]; then
+            echo "::error::No non-beta Xcode found"
+            exit 1
+          fi
+          echo "Selected Xcode $best_ver at $best_path"
+          sudo xcode-select -s "$best_path"
+          xcodebuild -version
+
+      - name: Ensure iOS platform is installed
+        run: xcodebuild -downloadPlatform iOS || true
+
+      - name: Install Procursus
+        uses: dhinakg/procursus-action@main
+        with:
+          packages: ldid findutils sed coreutils make
+
+      - name: Build
+        run: |
+          chmod +x Resources/Scripts/compile.release.mobile.ci.sh
+          ./Resources/Scripts/compile.release.mobile.ci.sh "$(pwd)" "$(pwd)/Asspp.ipa"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Asspp.ipa
+          path: Asspp.ipa
+
+  build-osx:
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select newest non-beta Xcode
+        run: |
+          set -euo pipefail
+          best_path=""
+          best_ver=""
+          for app in /Applications/Xcode*.app; do
+            [ -d "$app" ] || continue
+            info="$app/Contents/Info.plist"
+            [ -f "$info" ] || continue
+            # Skip beta/release-candidate installs.
+            case "$(printf '%s' "$app" | tr '[:upper:]' '[:lower:]')" in
+              *beta*|*_rc*) continue ;;
+            esac
+            ver="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info" 2>/dev/null || true)"
+            [ -n "$ver" ] || continue
+            if [ -z "$best_ver" ] || [ "$(printf '%s\n%s\n' "$best_ver" "$ver" | sort -V | tail -1)" = "$ver" ]; then
+              best_ver="$ver"
+              best_path="$app"
+            fi
+          done
+          if [ -z "$best_path" ]; then
+            echo "::error::No non-beta Xcode found"
+            exit 1
+          fi
+          echo "Selected Xcode $best_ver at $best_path"
+          sudo xcode-select -s "$best_path"
+          xcodebuild -version
+
+      - name: Install Procursus
+        uses: dhinakg/procursus-action@main
+        with:
+          packages: ldid findutils sed coreutils make
+
+      - name: Build
+        run: |
+          chmod +x Resources/Scripts/compile.release.osx.sh
+          ./Resources/Scripts/compile.release.osx.sh "$(pwd)" "$(pwd)/Asspp.zip"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Asspp.zip
+          path: Asspp.zip

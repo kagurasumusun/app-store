@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select newest non-beta Xcode
+        run: |
+          set -euo pipefail
+          best_path=""
+          best_ver=""
+          for app in /Applications/Xcode*.app; do
+            [ -d "$app" ] || continue
+            info="$app/Contents/Info.plist"
+            [ -f "$info" ] || continue
+            # Skip beta/release-candidate installs.
+            case "$(printf '%s' "$app" | tr '[:upper:]' '[:lower:]')" in
+              *beta*|*_rc*) continue ;;
+            esac
+            ver="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info" 2>/dev/null || true)"
+            [ -n "$ver" ] || continue
+            if [ -z "$best_ver" ] || [ "$(printf '%s\n%s\n' "$best_ver" "$ver" | sort -V | tail -1)" = "$ver" ]; then
+              best_ver="$ver"
+              best_path="$app"
+            fi
+          done
+          if [ -z "$best_path" ]; then
+            echo "::error::No non-beta Xcode found"
+            exit 1
+          fi
+          echo "Selected Xcode $best_ver at $best_path"
+          sudo xcode-select -s "$best_path"
+          xcodebuild -version
+
+      - name: Ensure iOS platform is installed
+        run: xcodebuild -downloadPlatform iOS || true
+
+      - name: Install Procursus
+        uses: dhinakg/procursus-action@main
+        with:
+          packages: ldid findutils sed coreutils make
+
+      # Output artifacts outside the repo: both compile scripts begin with
+      # `git clean -fdx`, so an artifact left in the working tree would be
+      # deleted by the next build step.
+      - name: Build iOS package
+        run: |
+          chmod +x Resources/Scripts/compile.release.mobile.ci.sh
+          ./Resources/Scripts/compile.release.mobile.ci.sh "$(pwd)" "${RUNNER_TEMP}/Asspp.ipa"
+
+      - name: Build macOS package
+        run: |
+          chmod +x Resources/Scripts/compile.release.osx.sh
+          ./Resources/Scripts/compile.release.osx.sh "$(pwd)" "${RUNNER_TEMP}/Asspp.zip"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" \
+              --notes "Release ${GITHUB_REF_NAME}"
+
+      - name: Upload release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${GITHUB_REF_NAME}" \
+            "${RUNNER_TEMP}/Asspp.ipa" \
+            "${RUNNER_TEMP}/Asspp.zip" \
+            --clobber
