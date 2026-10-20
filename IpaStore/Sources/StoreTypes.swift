@@ -462,7 +462,7 @@ struct StoreError: LocalizedError {
         // Codes only mean something inside their own domain. Reading the
         // raw code without checking the domain (as this used to) turns any
         // foreign error whose code happens to be 1 into "cancelled".
-        if nsError.domain == IPStoreErrorDomain.rawValue {
+        if nsError.domain == IPStoreErrorDomain {
             code = StoreErrorCode(rawValue: nsError.code) ?? .internalError
         } else if nsError.domain == NSURLErrorDomain {
             code = nsError.code == NSURLErrorCancelled ? .cancelled : .network
