@@ -1407,6 +1407,20 @@ void test_ota_manifest(const std::string& fixtures) {
          "plain page certificate link");
   expect(plain.find("https%3A%2F%2Fx%2Fm.plist") != std::string::npos,
          "plain page install link");
+
+  // Attribute injection: the certificate URL comes from the network address
+  // and the title comes from Apple, so both must be escaped in the page.
+  const std::string hostile = build_install_page(
+      "<script>alert(1)</script>\"", "com.example.sample",
+      "1.0\"><script>alert(2)</script>",
+      "itms-services://?action=download-manifest&url=https%3A%2F%2Fx%2Fm.plist",
+      "https://x/\"><script>alert(3)</script>");
+  expect(hostile.find("<script>") == std::string::npos,
+         "install page escapes injected markup");
+  expect(hostile.find("&lt;script&gt;") != std::string::npos,
+         "install page keeps escaped markup readable");
+  expect(hostile.find("&quot;") != std::string::npos,
+         "install page escapes quotes");
 }
 
 // ---------------------------------------------------------------------------

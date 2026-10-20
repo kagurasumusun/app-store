@@ -4,7 +4,7 @@ IPAShelf のテストは 3 層に分かれています。
 
 | 層 | コマンド | 内容 |
 | --- | --- | --- |
-| コア | `bash Scripts/build_core.sh` | C++ の 357 チェック + 外部ツールによる検証 |
+| コア | `bash Scripts/build_core.sh` | C++ の 360 チェック + 外部ツールによる検証 |
 | 静的 | `bash Scripts/check_static.sh` | Swift 構文、Objective-C ブリッジ API、pbxproj、括弧 |
 | 手動 | `docs/testing.md` のチェックリスト | 実機でのサインイン・ダウンロード・インストール |
 
@@ -24,7 +24,7 @@ SANITIZE=1 bash Scripts/build_core.sh
 
 ---
 
-## 1. コアのテスト（357 チェック）
+## 1. コアのテスト（360 チェック）
 
 ### エンコードとデータ形式
 
@@ -75,6 +75,15 @@ SANITIZE=1 bash Scripts/build_core.sh
 | `test_ranges` | 単一 Range、末尾指定、範囲外、複数範囲 |
 | `test_ota_router` | `/`、`/manifest.plist`、`/icon.png`、`/ipa`、`/ca.cer`、404、Host 不一致の 421 |
 | `test_http_server` | ループバックに実サーバーを立て、Range 付き GET を実際に送受信 |
+
+### サニタイザで見つかった不具合
+
+`SANITIZE=1` の実行で、`Url::parse()` がポート番号の解析に
+`std::strtol(std::string(port).c_str(), &end, 10)` を使い、
+`*end` を**一時文字列の破棄後**に読んでいた問題
+（`stack-use-after-scope`）を検出しました。現在は桁ごとに検証する
+`parse_port()` に置き換え、`0`・65536 以上・非数字・6 桁以上・
+IPv6 のポートをテストで固定しています。
 
 ### 証明書
 
