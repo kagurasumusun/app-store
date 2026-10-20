@@ -40,7 +40,7 @@ iPhone / iPad 向けの、自分が購入・所有している App Store アプ�
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │ SwiftUI (IpaStore/Sources)                                   │
-│  Search / Purchased / Detail / Versions / Downloads / Library │
+│  Search / Purchased / Downloads / Accounts / Settings         │
 └───────────────▲──────────────────────────────────────────────┘
                 │ Objective-C facade (NS_SWIFT_NAME)
 ┌───────────────┴──────────────────────────────────────────────┐

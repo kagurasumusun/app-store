@@ -112,20 +112,19 @@ CoreFP・CommerceKit・CommerceCore をロードして呼び出します。
 | ファイル | 内容 |
 | --- | --- |
 | `StoreTypes.swift` | `StoreApp`, `StoreAccount`, `StoreVersion`, `LibraryItem` などの値型 |
-| `StoreService.swift` | ObjC ブリッジを async/await に変換 |
-| `AppModel.swift` | `@Observable` な単一モデル。検索・詳細・DL・ライブラリ・設定 |
-| `InstallService.swift` | インストールサーバーのライフサイクルとフェーズ |
-| `Components.swift` | 共通部品（アートワーク、星、スクリーンショット、空状態） |
-| `SearchView.swift` | 検索、フィルタ、ストアフロント、履歴、ウィッシュリスト |
-| `AppDetailView.swift` | 詳細、評価、スクリーンショット、レビュー、バージョン |
-| `DownloadsView.swift` | 進行中・完了したダウンロード |
-| `LibraryView.swift` | アプリ単位のグルーピング、パッケージ検査 |
-| `WishlistView.swift` | 保存したアプリ |
-| `InstallSheet.swift` | 証明書・インストールの手順表示 |
-| `AccountsView.swift` | アカウント一覧、サインイン、2FA |
-| `SettingsView.swift` | 設定、証明書ガイド、謝辞 |
-| `RootView.swift` | 5 つのタブ |
-| `IpaStoreApp.swift` | エントリポイント、バックグラウンド遷移 |
+| `StoreService.swift` | ObjC ブリッジを async/await に変換（トークンローテート、購入含む） |
+| `AppModel.swift` | `@Observable` な単一モデル。検索・詳細・購入履歴・DL・ファイル管理。トークン失効時は自動で1回ローテートして再試行 |
+| `InstallService.swift` | インストールサーバーと証明書専用サーバーのライフサイクル |
+| `Components.swift` | 共通部品（アプリ行、アートワーク、星、スクリーンショット、空状態、地域選択） |
+| `SearchView.swift` | 検索、プラットフォーム/ストアフロント切替、最近の検索 |
+| `AppDetailView.swift` | 詳細、入手/ダウンロード、バージョン履歴 |
+| `PurchasedView.swift` | 購入履歴（DAAP）のページネーション一覧 |
+| `DownloadsView.swift` | 転送中タスクとダウンロード済みファイル（インストール/共有/削除/取込） |
+| `InstallSheet.swift` | インストールのステータス画面（自動でシステム確認を開く） |
+| `AccountsView.swift` | アカウント一覧・詳細（トークン更新）、サインイン、2FA |
+| `SettingsView.swift` | Root CA 導入、デバイス GUID、ストレージ、謝辞 |
+| `RootView.swift` | 5 つのタブ（検索/購入済み/ダウンロード/アカウント/設定） |
+| `IpaStoreApp.swift` | エントリポイント、IPA 取り込み、バックグラウンド遷移 |
 
 ### 状態管理
 

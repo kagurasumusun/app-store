@@ -69,7 +69,6 @@ SANITIZE=1 bash Scripts/build_core.sh
 | `test_storefronts` | 50 地域、`-1,29` ヘッダ、コードの一意性 |
 | `test_app_details` | スクリーンショット（iPhone/iPad）、評価、ジャンル、サイズ |
 | `test_search_filters` | 無料のみ、ジャンル、並び替え |
-| `test_reviews` | レビューの解析、`rel=next`、404 |
 
 ### IPA
 
