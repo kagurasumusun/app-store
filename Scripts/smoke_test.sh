@@ -22,6 +22,17 @@ if [ ! -d "$APP_PATH" ]; then
 fi
 mkdir -p "$LOG_DIR"
 
+# The simulator only grants keychain access to a signed app that declares a
+# keychain access group; without it the install server cannot store its key.
+echo "== Signature"
+codesign -dv "$APP_PATH" 2>&1 | sed -n '1,6p' || true
+if codesign -d --entitlements :- "$APP_PATH" 2>/dev/null \
+    | grep -q "keychain-access-groups"; then
+  echo "keychain-access-groups: present"
+else
+  echo "keychain-access-groups: missing (the smoke test will fail)" >&2
+fi
+
 fail() {
   echo "SMOKE TEST: FAIL - $*" >&2
   exit 1

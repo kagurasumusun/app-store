@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict/>
+<dict>
+	<!-- The install server keeps its root CA key in the keychain. Security
+	     rejects key material from a process without a keychain access group
+	     (OSStatus -34018), which is what the simulator smoke test hit while
+	     the app was built with signing disabled. On a device the
+	     provisioning profile supplies the same value. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	</array>
+</dict>
 </plist>

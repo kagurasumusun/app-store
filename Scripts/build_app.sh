@@ -6,9 +6,11 @@
 #   bash Scripts/build_app.sh --configuration Release --device
 #   bash Scripts/build_app.sh --destination 'platform=iOS Simulator,name=iPhone 18 Pro'
 #
-# Signing is disabled by default: CI has no provisioning profile and the
-# portable core is what we want to type-check. Pass --sign to keep the
-# project's automatic signing for local runs on a device.
+# Simulator builds are signed ad hoc: without a signature the simulator
+# refuses keychain access (OSStatus -34018) and the install server cannot
+# store its CA key. Device builds stay unsigned because CI has no
+# provisioning profile. Pass --sign to keep the project's automatic signing
+# for local runs on a device, or --unsigned to disable signing entirely.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,7 +18,7 @@ cd "${root}"
 
 destination="generic/platform=iOS Simulator"
 configuration="Debug"
-signing=(CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=)
+signing_mode="default"
 clean=0
 extra=()
 
@@ -43,7 +45,11 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --sign)
-      signing=()
+      signing_mode="project"
+      shift
+      ;;
+    --unsigned)
+      signing_mode="none"
       shift
       ;;
     --)
@@ -57,6 +63,30 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+case "${signing_mode}" in
+  default)
+    if [[ "${destination}" == *Simulator* ]]; then
+      signing_mode="adhoc"
+    else
+      signing_mode="none"
+    fi
+    ;;
+esac
+
+case "${signing_mode}" in
+  project)
+    signing=()
+    ;;
+  adhoc)
+    signing=(CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES
+             CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=-
+             PROVISIONING_PROFILE_SPECIFIER=)
+    ;;
+  *)
+    signing=(CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=)
+    ;;
+esac
 
 actions=(build)
 if [[ "${clean}" == "1" ]]; then
