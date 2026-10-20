@@ -20,10 +20,15 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 PROJECT = ROOT / "IpaStore.xcodeproj" / "project.pbxproj"
 
 # References that intentionally have no file on disk.
-ALLOWED_MISSING = {
-    "IpaStore.app",  # build product
-    "Security.framework",  # SDK framework
-}
+ALLOWED_MISSING = {"IpaStore.app"}  # build product
+SDK_FRAMEWORKS = "System/Library/Frameworks/"
+
+
+def expected_missing(name: str) -> bool:
+    """True for references the SDK or the build provides, not the repo."""
+    return pathlib.Path(name).name in ALLOWED_MISSING or name.startswith(
+        SDK_FRAMEWORKS
+    )
 
 ENTRY = re.compile(r"^\t\t([0-9A-F]{24}) /\* (.*?) \*/ = \{\s*$")
 FILE_REF = re.compile(
@@ -113,7 +118,7 @@ def main() -> int:
                 return
             checked += 1
             candidate = base / name
-            if not candidate.exists() and pathlib.Path(name).name not in ALLOWED_MISSING:
+            if not candidate.exists() and not expected_missing(name):
                 unresolved.append(str(candidate.relative_to(ROOT)))
             return
         here = base / group["path"] if group["path"] else base

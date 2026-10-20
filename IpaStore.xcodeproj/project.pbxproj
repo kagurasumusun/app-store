@@ -50,6 +50,7 @@
 		D150718D9B6CBCA321877417 /* InstallIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = A183E1631B0CB21E8122891E /* InstallIcon.png */; };
 		89A5B75C625F9E4A256AFEBD /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 605EDAA4713AF46395419B06 /* PrivacyInfo.xcprivacy */; };
 		91942AED1B816E9D37CE8BD4 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 60794832ED7257AA1D8C920F /* Security.framework */; };
+		D03ED11F0BC2BF93096191EB /* Network.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA447FF4F92EB763F95D82F7 /* Network.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -122,6 +123,7 @@
 		3A70FBA7ACEAFD484BB5A6B5 /* IpaStore.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = IpaStore.entitlements; sourceTree = "<group>"; };
 		84337AD8D27FCD69AF2C4FC2 /* IpaStore.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = IpaStore.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		60794832ED7257AA1D8C920F /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		BA447FF4F92EB763F95D82F7 /* Network.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -130,6 +132,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				91942AED1B816E9D37CE8BD4 /* Security.framework in Frameworks */,
+				D03ED11F0BC2BF93096191EB /* Network.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -323,6 +326,7 @@
 			isa = PBXGroup;
 			children = (
 				60794832ED7257AA1D8C920F /* Security.framework */,
+				BA447FF4F92EB763F95D82F7 /* Network.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";

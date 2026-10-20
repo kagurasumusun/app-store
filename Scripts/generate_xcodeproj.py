@@ -258,6 +258,8 @@ def main() -> None:
     target_release = ident("config:target:release")
     security_ref = ident("framework:security")
     security_build = ident("build:security")
+    network_ref = ident("framework:network")
+    network_build = ident("build:network")
 
     # Group children: nested groups first.
     children["sources"] = sorted(children["sources"])
@@ -280,7 +282,10 @@ def main() -> None:
         f"{groups['resources']} /* Resources */",
     ] + children["ipa"]
     children["products"] = [f"{product_ref} /* {TARGET_NAME}.app */"]
-    children["frameworks"] = [f"{security_ref} /* Security.framework */"]
+    children["frameworks"] = [
+        f"{security_ref} /* Security.framework */",
+        f"{network_ref} /* Network.framework */",
+    ]
     children["main"] = [
         f"{groups['ipa']} /* IpaStore */",
         f"{groups['core']} /* Core */",
@@ -312,11 +317,16 @@ def main() -> None:
         f"explicitFileType = wrapper.application; includeInIndex = 0; "
         f"path = {TARGET_NAME}.app; sourceTree = BUILT_PRODUCTS_DIR; }};\n"
     )
-    file_ref_text += (
-        f"\t\t{security_ref} /* Security.framework */ = {{isa = PBXFileReference; "
-        f"lastKnownFileType = wrapper.framework; name = Security.framework; "
-        f"path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; }};\n"
-    )
+    for framework_ref, framework_name in (
+        (security_ref, "Security.framework"),
+        (network_ref, "Network.framework"),
+    ):
+        file_ref_text += (
+            f"\t\t{framework_ref} /* {framework_name} */ = {{isa = PBXFileReference; "
+            f"lastKnownFileType = wrapper.framework; name = {framework_name}; "
+            f"path = System/Library/Frameworks/{framework_name}; "
+            f"sourceTree = SDKROOT; }};\n"
+        )
 
     build_text = ""
     for ref in files:
@@ -327,10 +337,14 @@ def main() -> None:
             f"\t\t{ref.build} /* {ref.name} in {phase_name} */ = {{isa = PBXBuildFile; "
             f"fileRef = {ref.ref} /* {ref.name} */; }};\n"
         )
-    build_text += (
-        f"\t\t{security_build} /* Security.framework in Frameworks */ = {{isa = PBXBuildFile; "
-        f"fileRef = {security_ref} /* Security.framework */; }};\n"
-    )
+    for framework_build, framework_ref, framework_name in (
+        (security_build, security_ref, "Security.framework"),
+        (network_build, network_ref, "Network.framework"),
+    ):
+        build_text += (
+            f"\t\t{framework_build} /* {framework_name} in Frameworks */ = "
+            f"{{isa = PBXBuildFile; fileRef = {framework_ref} /* {framework_name} */; }};\n"
+        )
 
     source_files = "".join(
         f"\t\t\t\t{ref.build} /* {ref.name} in Sources */,\n"
@@ -361,6 +375,7 @@ def main() -> None:
 			buildActionMask = 2147483647;
 			files = (
 				{security_build} /* Security.framework in Frameworks */,
+				{network_build} /* Network.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		}};
