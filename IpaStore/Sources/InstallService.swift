@@ -122,9 +122,8 @@ final class InstallService {
     /// fingerprint and instructions before the first install.
     func prepareCertificate() {
         do {
-            if let certificate = try IPInstallServer.prepareCertificate() {
-                certificateFingerprint = certificate.sha256Fingerprint
-            }
+            let certificate = try IPInstallServer.prepareCertificate()
+            certificateFingerprint = certificate.sha256Fingerprint
         } catch {
             phase = .failed(StoreError(error).message)
         }

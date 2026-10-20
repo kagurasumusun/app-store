@@ -72,7 +72,7 @@ typedef NS_ENUM(NSInteger, IPInstallServerState) {
 
 /// Generates (or loads) the root certificate without starting a server. Used
 /// by Settings to show the fingerprint and export the profile.
-+ (nullable IPInstallCertificate *)prepareCertificateWithError:
++ (IPInstallCertificate *)prepareCertificateWithError:
     (NSError *_Nullable *_Nullable)error
     NS_SWIFT_NAME(prepareCertificate());
 

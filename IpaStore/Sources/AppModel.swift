@@ -24,6 +24,10 @@ final class DownloadItem: Identifiable {
     let versionID: String?
     let startedAt = Date()
 
+    /// Immutable and `Sendable`, so the `Identifiable` conformance does not
+    /// cross the main actor (Swift 6 treats that as an error).
+    let id: String
+
     var fraction: Double = 0
     var receivedBytes: Int64 = 0
     var expectedBytes: Int64 = 0
@@ -35,11 +39,10 @@ final class DownloadItem: Identifiable {
     @ObservationIgnored private var lastSampleDate = Date()
     @ObservationIgnored private var lastSampleBytes: Int64 = 0
 
-    var id: String { "\(app.appID)-\(startedAt.timeIntervalSince1970)" }
-
     init(app: StoreApp, versionID: String?) {
         self.app = app
         self.versionID = versionID
+        self.id = "\(app.appID)-\(Date().timeIntervalSince1970)"
     }
 
     var progressLabel: String {

@@ -633,7 +633,7 @@ struct ConnectionState {
 
 #pragma mark - Certificate
 
-+ (nullable IPInstallCertificate *)prepareCertificateWithError:
++ (IPInstallCertificate *)prepareCertificateWithError:
     (NSError *_Nullable *_Nullable)error {
   NSString *directory = IPCertificateDirectory();
   NSString *caPath = [directory stringByAppendingPathComponent:@"root-ca.der"];
