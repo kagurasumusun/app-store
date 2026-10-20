@@ -43,17 +43,17 @@ final class InstallService {
                 self?.apply(state: state, progress: progress, message: message)
             }
         }
-        do {
-            try server.start()
-            installURL = server.installURL.flatMap(URL.init(string:))
-            pageURL = server.pageURL.flatMap(URL.init(string:))
-            certificateURL = server.certificateURL.flatMap(URL.init(string:))
-            certificateFingerprint = server.certificate?.sha256Fingerprint ?? ""
-            phase = .ready
-            message = "Waiting for the device"
-        } catch {
-            phase = .failed(StoreError(error).message)
+        guard server.start() else {
+            phase = .failed(server.startupError.map { StoreError($0).message }
+                ?? "The install server did not start.")
+            return
         }
+        installURL = server.installURL.flatMap(URL.init(string:))
+        pageURL = server.pageURL.flatMap(URL.init(string:))
+        certificateURL = server.certificateURL.flatMap(URL.init(string:))
+        certificateFingerprint = server.certificate?.sha256Fingerprint ?? ""
+        phase = .ready
+        message = "Waiting for the device"
     }
 
     private func makeServer(for item: LibraryItem) -> IPInstallServer {
@@ -121,10 +121,12 @@ final class InstallService {
     /// Loads (or creates) the root certificate so Settings can show the
     /// fingerprint and instructions before the first install.
     func prepareCertificate() {
-        do {
-            let certificate = try IPInstallServer.prepareCertificate()
+        let result = IPInstallServer.prepareCertificate()
+        if let certificate = result.certificate {
             certificateFingerprint = certificate.sha256Fingerprint
-        } catch {
+            return
+        }
+        if let error = result.error {
             phase = .failed(StoreError(error).message)
         }
     }

@@ -318,6 +318,12 @@ NSString *IPFingerprint(NSData *der) {
 
 @interface IPInstallServer ()
 @property (nonatomic, readwrite) IPInstallServerState state;
+@property (nonatomic, strong, readwrite, nullable) NSError *startupError;
+/// Internal forms. They are not exposed to Swift because the
+/// `NSError **` convention would rename them during import.
+- (BOOL)startWithError:(NSError *_Nullable *_Nullable)error;
++ (nullable IPInstallCertificate *)prepareCertificateWithError:
+    (NSError *_Nullable *_Nullable)error;
 - (void)notePayloadProgress:(double)fraction message:(NSString *)message;
 - (void)connectionDidFinish:(IPInstallConnection *)connection;
 - (void)reportFailure:(NSError *)error;
@@ -573,6 +579,20 @@ struct ConnectionState {
 
 @end
 
+@implementation IPInstallCertificateResult
+
+- (instancetype)initWithCertificate:(nullable IPInstallCertificate *)certificate
+                              error:(nullable NSError *)error {
+  self = [super init];
+  if (self != nil) {
+    _certificate = certificate;
+    _error = error;
+  }
+  return self;
+}
+
+@end
+
 @implementation IPInstallServer {
   NSString *_bundleID;
   NSString *_version;
@@ -631,9 +651,30 @@ struct ConnectionState {
   }
 }
 
++ (IPInstallCertificateResult *)prepareCertificate {
+  NSError *error = nil;
+  IPInstallCertificate *certificate = [self prepareCertificateWithError:&error];
+  if (certificate == nil && error == nil) {
+    error = IPInstallError(IPStoreErrorInternal,
+                           @"Certificate generation failed.");
+  }
+  return [[IPInstallCertificateResult alloc] initWithCertificate:certificate
+                                                           error:error];
+}
+
+- (BOOL)start {
+  NSError *error = nil;
+  const BOOL started = [self startWithError:&error];
+  _startupError = started ? nil : (error ?: IPInstallError(
+                                             IPStoreErrorInternal,
+                                             @"The install server did not start."));
+  return started;
+}
+
+
 #pragma mark - Certificate
 
-+ (IPInstallCertificate *)prepareCertificateWithError:
++ (nullable IPInstallCertificate *)prepareCertificateWithError:
     (NSError *_Nullable *_Nullable)error {
   NSString *directory = IPCertificateDirectory();
   NSString *caPath = [directory stringByAppendingPathComponent:@"root-ca.der"];

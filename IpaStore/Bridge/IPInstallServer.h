@@ -39,6 +39,17 @@ typedef NS_ENUM(NSInteger, IPInstallServerState) {
 @property (nonatomic, copy, readonly) NSString *sha256Fingerprint;
 @end
 
+/// Outcome of `+[IPInstallServer prepareCertificate]`.
+///
+/// A plain Objective-C `NSError **` method imports into Swift with a name the
+/// compiler derives from the selector, which is easy to get wrong. Returning
+/// an explicit result object keeps the Swift surface stable and lets the
+/// caller decide how to present the failure.
+@interface IPInstallCertificateResult : NSObject
+@property (nonatomic, strong, readonly, nullable) IPInstallCertificate *certificate;
+@property (nonatomic, strong, readonly, nullable) NSError *error;
+@end
+
 @interface IPInstallServer : NSObject
 
 - (instancetype)initWithBundleID:(NSString *)bundleID
@@ -66,17 +77,16 @@ typedef NS_ENUM(NSInteger, IPInstallServerState) {
 @property (nonatomic, copy, nullable) void (^stateHandler)(
     IPInstallServerState state, double progress, NSString *message);
 
-/// Imports as `start()` (the `...WithError:` suffix becomes `throws`).
-- (BOOL)startWithError:(NSError *_Nullable *_Nullable)error;
+/// Starts the TLS listener and the plain-HTTP certificate page.
+/// Returns `NO` when it fails; `startupError` then explains why.
+- (BOOL)start;
+/// Why the last `start` failed, if it did.
+@property (nonatomic, strong, readonly, nullable) NSError *startupError;
 - (void)stop;
 
 /// Generates (or loads) the root certificate without starting a server. Used
 /// by Settings to show the fingerprint and export the profile.
-/// Imports as `prepareCertificate()` (the `...WithError:` suffix becomes
-/// `throws`). Do not add NS_SWIFT_NAME here: the importer counts the error
-/// parameter, so a zero-argument Swift name is rejected.
-+ (IPInstallCertificate *)prepareCertificateWithError:
-    (NSError *_Nullable *_Nullable)error;
++ (IPInstallCertificateResult *)prepareCertificate;
 
 @end
 
