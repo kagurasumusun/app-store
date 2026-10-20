@@ -129,6 +129,14 @@ class StoreClient {
                                    std::string_view region, Platform platform,
                                    const CancellationToken& token);
 
+  /// Resolves artwork URLs for a batch of app ids via one lookup request
+  /// per hundred ids. The DAAP purchase history carries no artwork, so the
+  /// owned-apps list enriches its rows through this. Ids Apple does not
+  /// know in the region are simply absent from the result.
+  [[nodiscard]] Result<std::unordered_map<std::int64_t, std::string>>
+  artwork_urls(const std::vector<std::int64_t>& app_ids,
+               std::string_view region, const CancellationToken& token);
+
   /// Reads the current external version id from the public App Store catalog.
   [[nodiscard]] Result<std::string> latest_external_version_id(
       const App& app, std::string_view region, Platform platform,

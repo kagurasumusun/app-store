@@ -288,7 +288,8 @@ ipashelf::PlistValue make_download_reply(std::int64_t item_id = 0) {
 
 std::string catalog_json(std::int64_t app_id, std::string_view external_id,
                          bool include_ios_family = true) {
-  return "{\"data\":[{\"id\":" + std::to_string(app_id) +
+  // The real catalog is JSON:API: resource ids are strings, not numbers.
+  return "{\"data\":[{\"id\":\"" + std::to_string(app_id) + "\"" +
          ",\"type\":\"apps\",\"attributes\":{\"deviceFamilies\":[\"iphone\"" +
          (include_ios_family ? ",\"ipad\"" : "") +
          "],\"platformAttributes\":{\"ios\":{\"bundleId\":"
@@ -1017,6 +1018,132 @@ void test_download_unpinned_when_catalog_throttled() {
                std::string::npos,
            "unpinned redownload sent");
   }
+
+  // A catalog answering with a different app's resource is a parse-level
+  // failure, but the pin is advisory: the macOS download must proceed
+  // unpinned instead of surfacing "catalog returned a different app".
+  app.id = 987654327;
+  transport.requests.clear();
+  transport.enqueue_response(200, catalog_json(111, "9001"));
+  transport.enqueue_plist(make_download_reply());
+  auto mistaken = client.download_offer(account, app, "", Platform::kMacOS,
+                                        source.token());
+  expect(mistaken.has_value(),
+         "macOS download survives a mismatched catalog answer");
+
+  // Numeric (non-JSON:API) ids are accepted too.
+  app.id = 987654330;
+  transport.enqueue_response(
+      200, "{\"data\":[{\"id\":987654330,\"type\":\"apps\",\"attributes\":"
+           "{\"deviceFamilies\":[\"iphone\"],\"platformAttributes\":{\"ios\":"
+           "{\"bundleId\":\"com.example.sample\",\"externalVersionId\":"
+           "\"9200\"}}}}]}");
+  auto numeric = client.latest_external_version_id(app, "jp",
+                                                   Platform::kIPhone,
+                                                   source.token());
+  expect(numeric.has_value(), "numeric catalog id resolves");
+  if (numeric) {
+    expect_eq(numeric.value(), std::string("9200"), "numeric catalog id value");
+  }
+}
+
+void test_download_volume_server_error_fallback() {
+  using namespace ipashelf;
+  FakeTransport transport;
+  StoreConfiguration configuration;
+  configuration.sleep = [](std::chrono::milliseconds) {};
+  StoreClient client(transport, configuration);
+  CancellationSource source;
+
+  Account account;
+  account.directory_services_id = "1";
+  account.device_id = "AABBCCDDEEFF";
+  account.region = "us";
+
+  // The volume store answers many owned-app requests with a bare HTTP 500;
+  // the chain must continue to redownload instead of surfacing it.
+  App app;
+  app.id = 987654325;
+  app.bundle_id = "com.example.sample";
+  transport.enqueue_response(500, "");
+  transport.enqueue_plist(make_bag());
+  transport.enqueue_plist(make_download_reply());
+  auto offer = client.download_offer(account, app, "9001", Platform::kIPhone,
+                                     source.token());
+  expect(offer.has_value(), "pinned download survives a volume-store 500");
+  expect_eq(transport.requests.size(), std::size_t{3},
+            "volume, bag, redownload after 500");
+  if (transport.requests.size() == 3) {
+    expect(transport.requests[2].url.find("/r/redownload") !=
+               std::string::npos,
+           "redownload attempted after volume 500");
+  }
+
+  // Unpinned: volume 500, then the catalog pin selects the iOS build for
+  // the redownload request.
+  app.id = 987654326;
+  transport.requests.clear();
+  transport.enqueue_response(500, "");
+  transport.enqueue_plist(make_bag());
+  transport.enqueue_response(200, catalog_json(app.id, "9001"));
+  transport.enqueue_plist(make_download_reply());
+  auto unpinned = client.download_offer(account, app, "", Platform::kIPhone,
+                                        source.token());
+  expect(unpinned.has_value(),
+         "unpinned download survives a volume-store 500");
+  expect_eq(transport.requests.size(), std::size_t{4},
+            "volume, bag, catalog, redownload after 500");
+  if (transport.requests.size() == 4) {
+    expect(transport.requests[3].url.find("/r/redownload") !=
+               std::string::npos,
+           "pinned redownload after volume 500");
+  }
+}
+
+void test_artwork_urls() {
+  using namespace ipashelf;
+  FakeTransport transport;
+  StoreConfiguration configuration;
+  configuration.sleep = [](std::chrono::milliseconds) {};
+  StoreClient client(transport, configuration);
+  CancellationSource source;
+
+  auto empty = client.artwork_urls({}, "jp", source.token());
+  expect(empty.has_value(), "empty artwork batch succeeds");
+  if (empty) expect(empty.value().empty(), "empty artwork batch is empty");
+  expect(transport.requests.empty(), "empty artwork batch makes no request");
+
+  transport.enqueue_response(
+      200,
+      "{\"resultCount\":2,\"results\":["
+      "{\"trackId\":111,\"kind\":\"software\",\"artworkUrl512\":"
+      "\"https://example.invalid/icon512.png\"},"
+      "{\"trackId\":222,\"kind\":\"software\",\"artworkUrl100\":"
+      "\"https://example.invalid/icon100.png\"}]}");
+  auto urls = client.artwork_urls({111, 222, 333}, "jp", source.token());
+  expect(urls.has_value(), "artwork batch succeeds");
+  if (urls) {
+    expect_eq(urls.value().size(), std::size_t{2}, "two artwork urls");
+    const auto first = urls.value().find(111);
+    expect(first != urls.value().end() &&
+               first->second == "https://example.invalid/icon512.png",
+           "512 artwork preferred");
+    const auto second = urls.value().find(222);
+    expect(second != urls.value().end() &&
+               second->second == "https://example.invalid/icon100.png",
+           "100 artwork used as fallback");
+    expect(urls.value().count(333) == 0, "unknown id absent");
+  }
+  expect_eq(transport.requests.size(), std::size_t{1},
+            "one batched artwork request");
+  if (!transport.requests.empty()) {
+    expect(transport.requests.front().url.find("itunes.apple.com/lookup?") !=
+               std::string::npos,
+           "artwork lookup URL");
+    expect(transport.requests.front().url.find("country=jp") !=
+               std::string::npos,
+           "artwork lookup country");
+  }
 }
 
 void test_download_offer() {
@@ -1679,6 +1806,12 @@ void test_owned_apps() {
   transport.enqueue_plist(make_certificate());
   transport.enqueue_plist(make_setup_reply());
   enqueue_owned_flow(transport);
+  // The page's artwork comes from one batched lookup after the DAAP flow.
+  transport.enqueue_response(
+      200,
+      "{\"resultCount\":1,\"results\":[{\"trackId\":222,\"kind\":"
+      "\"mac-software\",\"artworkUrl512\":"
+      "\"https://example.invalid/mac512.png\"}]}");
 
   auto page = client.owned_apps(account, std::nullopt, 2, 2, source.token());
   expect(page.has_value(), "owned apps resolve");
@@ -1696,11 +1829,14 @@ void test_owned_apps() {
     expect(std::find(mac.platforms.begin(), mac.platforms.end(),
                      Platform::kMacOS) != mac.platforms.end(),
            "media kind marks the Mac app");
+    expect_eq(mac.artwork_url,
+              std::string("https://example.invalid/mac512.png"),
+              "artwork enriched from batched lookup");
   }
 
-  expect_eq(transport.requests.size(), std::size_t{9},
-            "bag + SAP setup + two DAAP flows");
-  if (transport.requests.size() == 9) {
+  expect_eq(transport.requests.size(), std::size_t{10},
+            "bag + SAP setup + two DAAP flows + artwork lookup");
+  if (transport.requests.size() == 10) {
     const auto& login = transport.requests[3];
     expect(login.url.ends_with("/login"), "DAAP login URL");
     expect(!login.headers.contains("X-Apple-ActionSignature"),
@@ -1737,6 +1873,7 @@ void test_owned_apps() {
   transport.enqueue_plist(make_certificate());
   transport.enqueue_plist(make_setup_reply());
   enqueue_owned_flow(transport);
+  transport.enqueue_response(200, "{\"resultCount\":0,\"results\":[]}");
   auto mac_page =
       client.owned_apps(account, Platform::kMacOS, 1, 10, source.token());
   expect(mac_page.has_value(), "filtered owned apps resolve");
@@ -3260,6 +3397,8 @@ int main(int argc, char** argv) {
   test_latest_external_version();
   test_catalog_throttling();
   test_download_unpinned_when_catalog_throttled();
+  test_download_volume_server_error_fallback();
+  test_artwork_urls();
   test_download_offer();
   test_download_fallback();
   test_download_redirect_replay();

@@ -591,6 +591,23 @@ Result<OwnedAppsPage> StoreClient::owned_apps(const Account& account,
       output.apps.assign(apps.begin() + static_cast<std::ptrdiff_t>(start),
                          apps.begin() + static_cast<std::ptrdiff_t>(end));
     }
+    // The DAAP purchase history carries no artwork; without this the
+    // Purchased list is a wall of placeholder icons. Best-effort only:
+    // artwork lookup must never fail the history itself.
+    std::vector<std::int64_t> artwork_ids;
+    for (const App& app : output.apps) {
+      if (app.artwork_url.empty() && app.id > 0) {
+        artwork_ids.push_back(app.id);
+      }
+    }
+    if (!artwork_ids.empty()) {
+      if (auto urls = artwork_urls(artwork_ids, account.region, token)) {
+        for (App& app : output.apps) {
+          const auto found = urls.value().find(app.id);
+          if (found != urls.value().end()) app.artwork_url = found->second;
+        }
+      }
+    }
     result = std::move(output);
   }
 

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cstdlib>
 #include <limits>
@@ -267,13 +268,31 @@ void store_catalog_version(std::string_view key, std::string_view version) {
       std::string(version), std::chrono::steady_clock::now()};
 }
 
-// A soft catalog failure says "no pin could be determined", not "the
-// download cannot work": the app may be missing from the public catalog, or
-// Apple may be rate-limiting it. Callers proceed unpinned and let the
-// download-response and package checks decide.
+// JSON:API resource identifiers are strings ("id": "123456789"), while the
+// iTunes search API uses numbers. Accept both spellings.
+std::optional<std::int64_t> json_identifier(const Json* value) {
+  if (value == nullptr) return std::nullopt;
+  if (value->is_number()) return value->int_or();
+  if (value->is_string()) {
+    const std::string text = trim(value->string_or());
+    if (text.empty()) return std::nullopt;
+    std::int64_t parsed = 0;
+    const char* first = text.data();
+    const char* last = first + text.size();
+    const auto result = std::from_chars(first, last, parsed);
+    if (result.ec == std::errc() && result.ptr == last) return parsed;
+  }
+  return std::nullopt;
+}
+
+// The catalog lookup is advisory for every internal caller: it only pins a
+// build, and the download-response and package checks revalidate whatever
+// comes back. Any failure other than cancellation or a programming error
+// therefore just means "no pin" — delisted apps, rate limiting, and even
+// malformed catalog answers must not abort the download itself.
 bool catalog_failure_allows_unpinned(const Error& error) {
-  return error.code == ErrorCode::kAppNotFound ||
-         error.code == ErrorCode::kTemporarilyUnavailable;
+  return error.code != ErrorCode::kCancelled &&
+         error.code != ErrorCode::kInvalidArgument;
 }
 
 Result<PlistValue> decode_plist_response(const HttpResponse& response) {
@@ -1211,6 +1230,75 @@ Result<App> StoreClient::lookup(std::int64_t app_id,
   return results.value().results.front();
 }
 
+Result<std::unordered_map<std::int64_t, std::string>> StoreClient::artwork_urls(
+    const std::vector<std::int64_t>& app_ids, std::string_view region,
+    const CancellationToken& token) {
+  std::unordered_map<std::int64_t, std::string> output;
+  if (app_ids.empty()) return output;
+  const std::string country = region_or_default(region);
+  // The lookup endpoint accepts a comma-separated id list; one request per
+  // page of purchase history keeps this to a handful of round trips.
+  constexpr std::size_t kChunkSize = 100;
+  for (std::size_t start = 0; start < app_ids.size(); start += kChunkSize) {
+    const std::size_t end = std::min(app_ids.size(), start + kChunkSize);
+    std::string joined;
+    for (std::size_t index = start; index < end; ++index) {
+      if (app_ids[index] <= 0) continue;
+      if (!joined.empty()) joined += ",";
+      joined += std::to_string(app_ids[index]);
+    }
+    if (joined.empty()) continue;
+    std::vector<std::pair<std::string, std::string>> query = {
+        {"id", joined},
+        {"country", country},
+        {"entity", "software"},
+        {"limit", "200"},
+    };
+    HttpRequest request;
+    request.method = "GET";
+    request.url = "https://" + std::string(kITunesHost) + "/lookup?" +
+                  build_query(query);
+    request.headers.set("Accept", "application/json");
+    request.headers.set("User-Agent", configuration_.user_agent);
+    auto response = transport_.send(request, token);
+    if (!response) return response.error();
+    if (response.value().status != 200) {
+      return Error{ErrorCode::kHttpStatus,
+                   "App Store lookup returned HTTP " +
+                       std::to_string(response.value().status),
+                   response.value().status};
+    }
+    // Parse only the two fields this enrichment needs: reusing the full
+    // search parser would drop entries whose display name is absent,
+    // which says nothing about whether their artwork is usable.
+    auto document = Json::parse(std::string_view(
+        reinterpret_cast<const char*>(response.value().body.data()),
+        response.value().body.size()));
+    if (!document) return document.error();
+    const Json* results = document.value().find("results");
+    if (results == nullptr || !results->is_array()) {
+      return make_error(ErrorCode::kParse,
+                        "Apple search response has no results");
+    }
+    for (const auto& entry : results->array_items()) {
+      auto id = json_identifier(entry.find("trackId"));
+      if (!id) id = json_identifier(entry.find("adamId"));
+      if (!id || *id <= 0) continue;
+      std::string artwork;
+      if (const Json* url = entry.find("artworkUrl512"); url != nullptr) {
+        artwork = url->string_or();
+      }
+      if (artwork.empty()) {
+        if (const Json* url = entry.find("artworkUrl100"); url != nullptr) {
+          artwork = url->string_or();
+        }
+      }
+      if (!artwork.empty()) output[*id] = std::move(artwork);
+    }
+  }
+  return output;
+}
+
 Result<std::string> StoreClient::latest_external_version_id(
     const App& app, std::string_view region, Platform platform,
     const CancellationToken& token) {
@@ -1292,7 +1380,8 @@ Result<std::string> StoreClient::latest_external_version_id(
                       "catalog response must contain exactly one app");
   }
   const Json& item = data->array_items().front();
-  if (item.find("id") == nullptr || item.find("id")->int_or() != app.id) {
+  const auto catalog_id = json_identifier(item.find("id"));
+  if (!catalog_id || *catalog_id != app.id) {
     return make_error(ErrorCode::kParse, "catalog returned a different app");
   }
   if (item.find("type") != nullptr && item.find("type")->string_or() != "apps") {
@@ -1893,8 +1982,13 @@ Result<DownloadOffer> StoreClient::send_download_product(
 
   auto volume = legacy_request(volume_store_url(account),
                                "externalVersionId", version);
-  if (!volume) return volume.error();
-  if (!is_empty_download_response(volume.value()) &&
+  // The volume store answers many owned-app requests with a bare HTTP 500
+  // and no plist at all; that is exactly the population the redownload
+  // endpoint serves, so a server error falls through instead of aborting.
+  const bool volume_server_error =
+      !volume && volume.error().http_status >= 500;
+  if (!volume && !volume_server_error) return volume.error();
+  if (volume && !is_empty_download_response(volume.value()) &&
       !is_unavailable_download_response(volume.value()) &&
       !is_license_conflict_response(volume.value())) {
     return interpret_download_response(volume.value().root, app, version,
@@ -1910,6 +2004,7 @@ Result<DownloadOffer> StoreClient::send_download_product(
     bag = fetched.value();
   }
   if (bag->redownload_endpoint.empty()) {
+    if (!volume) return volume.error();
     return interpret_download_response(volume.value().root, app, version,
                                         false);
   }
@@ -1934,6 +2029,19 @@ Result<DownloadOffer> StoreClient::send_download_product(
         // the package platform.
         auto unpinned = legacy_request(bag->redownload_endpoint,
                                        "appExtVrsId", "");
+        if (!unpinned && unpinned.error().http_status >= 500 &&
+            !bag->update_endpoint.empty() &&
+            valid_dispatch_endpoint(bag->update_endpoint, "update")) {
+          // Unpinned redownload can answer a bare 500 for the same
+          // licenses updateProduct still serves; give it one attempt
+          // before surfacing the failure.
+          auto update =
+              legacy_request(bag->update_endpoint, "appExtVrsId", "");
+          if (update) {
+            return interpret_download_response(update.value().root, app, "",
+                                                true);
+          }
+        }
         if (!unpinned) return unpinned.error();
         return interpret_download_response(unpinned.value().root, app, "",
                                             true);
@@ -1951,7 +2059,7 @@ Result<DownloadOffer> StoreClient::send_download_product(
       platform == Platform::kAppleTV || platform == Platform::kWatchOS;
   const bool try_update =
       !bag->update_endpoint.empty() && !version.empty() && update_platform &&
-      ((!redownload && redownload.error().http_status == 500) ||
+      ((!redownload && redownload.error().http_status >= 500) ||
        (redownload && is_unavailable_download_response(redownload.value())));
   if (try_update) {
     // The bag's updateProduct can serve pinned versions when redownload
@@ -1986,16 +2094,13 @@ Result<DownloadOffer> StoreClient::download_offer(
                           platform == Platform::kVisionOS)) {
     auto latest =
         latest_external_version_id(app, account.region, platform, token);
-    // Delisted tvOS apps may have no catalog offer but still be available
-    // for redownload; a rate-limited catalog should not block any of the
-    // non-iOS platforms either. The returned package platform is
-    // validated later.
-    const bool may_be_unpinned =
-        !latest &&
-        ((platform == Platform::kAppleTV &&
-          latest.error().code == ErrorCode::kAppNotFound) ||
-         latest.error().code == ErrorCode::kTemporarilyUnavailable);
-    if (!latest && !may_be_unpinned) return latest.error();
+    // The pin is advisory: delisted apps may have no catalog offer but
+    // still be available for redownload, and a throttled or malformed
+    // catalog answer must not block the download. The returned package
+    // platform is validated later.
+    if (!latest && !catalog_failure_allows_unpinned(latest.error())) {
+      return latest.error();
+    }
     if (latest) version = latest.value();
   }
   return send_download_product(account, app, hardware.value(), version,
