@@ -1056,7 +1056,8 @@ struct ConnectionState {
   if (_certificate != nil) {
     NSData *profile = IPProfileMobileConfig(_certificate.der);
     package.profile_data =
-        std::string([profile bytes], [profile length]);
+        std::string(static_cast<const char *>(profile.bytes),
+                    profile.length);
   }
   std::error_code sizeError;
   package.payload_size = static_cast<std::uint64_t>(
@@ -1108,7 +1109,8 @@ struct ConnectionState {
   if (_certificate != nil) {
     NSData *profile = IPProfileMobileConfig(_certificate.der);
     package.profile_data =
-        std::string([profile bytes], [profile length]);
+        std::string(static_cast<const char *>(profile.bytes),
+                    profile.length);
   }
   {
     std::lock_guard<std::mutex> lock(_routerMutex);
