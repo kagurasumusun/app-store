@@ -121,7 +121,7 @@ final class StoreService: @unchecked Sendable {
                 if let error {
                     continuation.resume(throwing: StoreError(error))
                 } else {
-                    continuation.resume(returning: ())
+                    continuation.resume(returning: Void())
                 }
             }
         }
