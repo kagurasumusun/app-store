@@ -1,0 +1,21 @@
+# Build products
+build/
+DerivedData/
+*.o
+*.a
+*.dSYM/
+
+# Xcode user state
+xcuserdata/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Local tooling
+.venv/
