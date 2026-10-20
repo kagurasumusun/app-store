@@ -11,6 +11,8 @@ cxx="${CXX:-c++}"
 cc="${CC:-cc}"
 std="${CXX_STD:--std=c++20}"
 warnings=(-Wall -Wextra -Werror -Wno-unused-parameter)
+# macOS still ships bash 3.2, where expanding an empty array under `set -u`
+# aborts the script. ${arr[@]+"${arr[@]}"} keeps the script portable.
 sanitizers=()
 if [[ "${SANITIZE:-0}" == "1" ]]; then
   sanitizers=(-fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -49,13 +51,13 @@ for source in "${c_sources[@]}"; do
 done
 for source in "${cpp_sources[@]}"; do
   object="${build_dir}/$(basename "${source%.cpp}").o"
-  "${cxx}" "${std}" "${warnings[@]}" "${sanitizers[@]}" -O1 -g \
+  "${cxx}" "${std}" "${warnings[@]}" ${sanitizers[@]+"${sanitizers[@]}"} -O1 -g \
     -I"${root}/Core/include" -I"${root}/Core/tests" -I"${root}/ThirdParty/miniz" \
     -c "${root}/${source}" -o "${object}"
   objects+=("${object}")
 done
 
-"${cxx}" "${std}" "${warnings[@]}" "${sanitizers[@]}" "${objects[@]}" \
+"${cxx}" "${std}" "${warnings[@]}" ${sanitizers[@]+"${sanitizers[@]}"} "${objects[@]}" \
   -pthread -o "${build_dir}/test_core"
 
 fixtures="${build_dir}/fixtures"

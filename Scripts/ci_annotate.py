@@ -17,6 +17,8 @@ from pathlib import Path
 
 MAX_ERRORS = 60
 MAX_WARNINGS = 20
+TAIL_LINES = 25
+TAIL_CHARS = 6000
 
 # clang / swiftc: /path/to/file.swift:12:34: error: message
 LOCATED = re.compile(
@@ -77,6 +79,23 @@ def annotate(path: Path) -> int:
     return errors
 
 
+def annotate_tail(path: Path) -> None:
+    """Emits the end of the log as one annotation.
+
+    Compiler diagnostics are parsed above; this catches everything else
+    (shell errors, linker failures, `xcodebuild` summaries) that would
+    otherwise only be visible in the raw Actions log.
+    """
+    try:
+        lines = [line for line in path.read_text(errors="replace").splitlines() if line.strip()]
+    except OSError:
+        return
+    if not lines:
+        return
+    tail = "\n".join(lines[-TAIL_LINES:])[-TAIL_CHARS:]
+    print(f"::error title={path.name} (tail)::{escape(tail)}")
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         print("usage: ci_annotate.py <log> [<log> ...]", file=sys.stderr)
@@ -90,6 +109,8 @@ def main(argv: list[str]) -> int:
         found = annotate(path)
         total += found
         print(f"{path}: {found} error line(s)")
+        if found == 0:
+            annotate_tail(path)
 
     # Failures are reported through annotations; the job already failed.
     return 0
