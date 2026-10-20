@@ -237,7 +237,7 @@ struct GetButton: View {
                     model.get(app, versionID: versionID)
                 } label: {
                     Image(systemName: "icloud.and.arrow.down")
-                        .font(.system(size: 23, weight: .medium))
+                        .font(.system(size: 25, weight: .medium))
                         .foregroundStyle(theme.accentColor)
                         .frame(width: 44, height: 32)
                         .contentShape(Rectangle())
@@ -295,13 +295,29 @@ struct AppListRow: View {
                 }
             }
             Spacer(minLength: 8)
-            GetButton(app: app, ownedContext: ownedContext)
+            VStack(spacing: 3) {
+                GetButton(app: app, ownedContext: ownedContext)
+                if app.hasInAppPurchases {
+                    // The App Store prints this microcopy under the GET
+                    // capsule in list rows.
+                    Text("In-App Purchases")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+            }
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
         .contentShape(Rectangle())
         .background {
             NavigationLink(value: app) { EmptyView() }
                 .opacity(0)
+        }
+        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+        // Hairlines start under the text, not under the icon.
+        .alignmentGuide(.listRowSeparatorLeading) { dimensions in
+            dimensions[.leading] + 72
         }
     }
 
@@ -336,7 +352,11 @@ struct SkeletonAppRow: View {
                 .fill(Color(.secondarySystemFill))
                 .frame(width: 72, height: 30)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
+        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+        .alignmentGuide(.listRowSeparatorLeading) { dimensions in
+            dimensions[.leading] + 72
+        }
         .redacted(reason: .placeholder)
         .accessibilityHidden(true)
     }
@@ -363,7 +383,16 @@ struct FilterChip: View {
             }
             .padding(.horizontal, 14)
             .frame(height: 32)
-            .background(Capsule().fill(selected ? theme.accentColor : Color(.secondarySystemFill)))
+            .background {
+                if selected {
+                    Capsule().fill(theme.accentColor)
+                } else {
+                    // The App Store's filter chips are hairline-outlined
+                    // capsules on the page background, not gray pills.
+                    Capsule()
+                        .strokeBorder(Color.primary.opacity(0.22), lineWidth: 1)
+                }
+            }
             .foregroundStyle(selected ? Color.white : Color.primary)
         }
         .buttonStyle(.plain)

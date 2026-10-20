@@ -23,6 +23,17 @@
         }
       }
     },
+    "%@ for the current version": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "現行バージョンでは%@"
+          }
+        }
+      }
+    },
     "%@ of %@": {
       "extractionState": "manual",
       "localizations": {
@@ -650,6 +661,17 @@
         }
       }
     },
+    "Developer": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "デベロッパ"
+          }
+        }
+      }
+    },
     "Developer Tools": {
       "extractionState": "manual",
       "localizations": {
@@ -848,6 +870,17 @@
         }
       }
     },
+    "Every app, in any storefront — by name or bundle ID — for iPhone, iPad, Mac, Apple TV, Apple Watch and Vision Pro.": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "すべての国のストアのアプリを、名前でもバンドルIDでも検索できます。iPhone、iPad、Mac、Apple TV、Apple Watch、Vision Proに対応。"
+          }
+        }
+      }
+    },
     "Every app, in any storefront, for iPhone, iPad, Mac, Apple TV, Apple Watch and Vision Pro.": {
       "extractionState": "manual",
       "localizations": {
@@ -954,6 +987,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "ゲーム"
+          }
+        }
+      }
+    },
+    "Games, Apps, and More": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ゲーム、Appなど"
           }
         }
       }
@@ -1790,6 +1834,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "評価"
+          }
+        }
+      }
+    },
+    "Ratings & Reviews": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "評価とレビュー"
           }
         }
       }
@@ -2703,6 +2758,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "iOSがダウンロードとインストールを実行"
+          }
+        }
+      }
+    },
+    "out of 5": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "5つ星のうち"
           }
         }
       }

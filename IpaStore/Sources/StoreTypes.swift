@@ -146,6 +146,26 @@ struct StoreApp: Identifiable, Hashable {
         return ByteCountFormatter.string(fromByteCount: byteSize, countStyle: .file)
     }
 
+    /// Localized abbreviated date for the raw ISO timestamps the store
+    /// returns, e.g. "Oct 20, 2026" instead of "2026-10-20".
+    var releaseDateFormatted: String { Self.abbreviatedDate(releaseDate) }
+    var currentVersionDateFormatted: String {
+        Self.abbreviatedDate(currentVersionReleaseDate)
+    }
+
+    private static func abbreviatedDate(_ raw: String) -> String {
+        guard !raw.isEmpty else { return raw }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var parsed = formatter.date(from: raw)
+        if parsed == nil {
+            formatter.formatOptions = [.withInternetDateTime]
+            parsed = formatter.date(from: raw)
+        }
+        guard let parsed else { return String(raw.prefix(10)) }
+        return parsed.formatted(date: .abbreviated, time: .omitted)
+    }
+
     var advisoryLabel: String {
         contentAdvisoryRating.isEmpty ? "—" : contentAdvisoryRating
     }

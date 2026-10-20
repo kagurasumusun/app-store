@@ -19,7 +19,7 @@ struct SearchView: View {
             .navigationTitle("Search")
             .searchable(text: $model.searchText,
                         placement: .navigationBarDrawer(displayMode: .always),
-                        prompt: "App name or bundle ID")
+                        prompt: "Games, Apps, and More")
             .onChange(of: model.searchText) { _, text in
                 scheduleSearch(for: text)
             }
@@ -66,7 +66,7 @@ struct SearchView: View {
                 }
                 filtersMenu
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 20)
             .padding(.vertical, 8)
         }
     }
@@ -125,7 +125,10 @@ struct SearchView: View {
             }
             .padding(.horizontal, 14)
             .frame(height: 32)
-            .background(Capsule().fill(Color(.secondarySystemFill)))
+            .background {
+                Capsule()
+                    .strokeBorder(Color.primary.opacity(0.22), lineWidth: 1)
+            }
             .foregroundStyle(Color.primary)
         }
     }
@@ -174,14 +177,9 @@ struct SearchView: View {
 
     private var resultsList: some View {
         List {
-            Section {
-                ForEach(model.searchResults) { app in
-                    AppListRow(app: app)
-                }
-            } header: {
-                Text(String(localized: "\(model.searchResults.count) results in \(model.regionName(model.region))"))
-                    .font(.caption)
-                    .textCase(nil)
+            // The App Store shows bare results — no count header.
+            ForEach(model.searchResults) { app in
+                AppListRow(app: app)
             }
         }
         .listStyle(.plain)
@@ -282,7 +280,7 @@ struct SearchView: View {
         VStack(alignment: .leading, spacing: 16) {
             featureRow(symbol: "magnifyingglass",
                        title: String(localized: "Search the App Store"),
-                       message: String(localized: "Every app, in any storefront, for iPhone, iPad, Mac, Apple TV, Apple Watch and Vision Pro."))
+                       message: String(localized: "Every app, in any storefront — by name or bundle ID — for iPhone, iPad, Mac, Apple TV, Apple Watch and Vision Pro."))
             featureRow(symbol: "clock.arrow.circlepath",
                        title: String(localized: "Download any version"),
                        message: String(localized: "Not just the latest build — every version Apple still serves for your account."))

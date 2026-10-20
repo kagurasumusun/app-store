@@ -163,7 +163,12 @@ struct AccountHubView: View {
             Button {
                 model.showLogin = true
             } label: {
-                Label("Add Account", systemImage: "plus.circle.fill")
+                HStack(spacing: 12) {
+                    HubRowIcon(systemImage: "person.badge.plus",
+                               color: theme.accentColor)
+                    Text("Add Account")
+                        .foregroundStyle(.primary)
+                }
             }
         } header: {
             Text("Accounts")
@@ -205,14 +210,22 @@ struct AccountHubView: View {
                     model.presentMessage(String(localized: "Certificate"), error)
                 }
             } label: {
-                Label("Install Root Certificate", systemImage: "checkmark.shield")
+                HStack(spacing: 12) {
+                    HubRowIcon(systemImage: "checkmark.shield.fill", color: .green)
+                    Text("Install Root Certificate")
+                        .foregroundStyle(.primary)
+                }
             }
             Button {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
                     UIApplication.shared.open(url)
                 }
             } label: {
-                Label("Open Settings", systemImage: "gearshape")
+                HStack(spacing: 12) {
+                    HubRowIcon(systemImage: "gearshape.fill", color: .gray)
+                    Text("Open Settings")
+                        .foregroundStyle(.primary)
+                }
             }
             DisclosureGroup {
                 VStack(alignment: .leading, spacing: 8) {
@@ -315,7 +328,10 @@ struct AccountHubView: View {
                 Button(role: .destructive) {
                     showDeleteAll = true
                 } label: {
-                    Label("Delete All Packages", systemImage: "trash")
+                    HStack(spacing: 12) {
+                        HubRowIcon(systemImage: "trash.fill", color: .red)
+                        Text("Delete All Packages")
+                    }
                 }
             }
         } header: {
@@ -343,7 +359,10 @@ struct AccountHubView: View {
         Section {
             InfoRow(label: String(localized: "Version"), value: model.appVersion)
             NavigationLink(value: HubDestination.acknowledgements) {
-                Label("Acknowledgements", systemImage: "doc.text")
+                HStack(spacing: 12) {
+                    HubRowIcon(systemImage: "doc.text.fill", color: .indigo)
+                    Text("Acknowledgements")
+                }
             }
         } header: {
             Text("About")
@@ -355,6 +374,23 @@ struct AccountHubView: View {
 
 private enum HubDestination: Hashable {
     case acknowledgements
+}
+
+/// Settings-style icon tile: white glyph on a colored rounded square.
+private struct HubRowIcon: View {
+    let systemImage: String
+    let color: Color
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 29, height: 29)
+            .background {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(color)
+            }
+    }
 }
 
 private struct AccountRow: View {

@@ -21,16 +21,19 @@ struct AppDetailView: View {
                     .padding(.top, 14)
                 statsStrip
                     .padding(.top, 20)
+                // Product-page order follows the App Store: What's New,
+                // Version History, Preview, description, Ratings &
+                // Reviews, Information.
                 Divider().padding(.top, 18).padding(.horizontal, 20)
-                versionsSection
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 18)
                 if !app.releaseNotes.isEmpty {
-                    Divider().padding(.horizontal, 20)
                     whatsNewSection
                         .padding(.horizontal, 20)
                         .padding(.vertical, 18)
+                    Divider().padding(.horizontal, 20)
                 }
+                versionsSection
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 18)
                 if !app.gallery.isEmpty {
                     Divider().padding(.horizontal, 20)
                     previewSection
@@ -39,6 +42,12 @@ struct AppDetailView: View {
                 if !app.description.isEmpty {
                     Divider().padding(.horizontal, 20)
                     descriptionSection
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 18)
+                }
+                if app.ratingCount > 0 {
+                    Divider().padding(.horizontal, 20)
+                    ratingsSection
                         .padding(.horizontal, 20)
                         .padding(.vertical, 18)
                 }
@@ -81,13 +90,13 @@ struct AppDetailView: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 16) {
-            AppArtwork(url: app.artworkURL, size: 104)
+            AppArtwork(url: app.artworkURL, size: 118)
             VStack(alignment: .leading, spacing: 4) {
                 Text(app.name)
-                    .font(.system(size: 21, weight: .bold))
+                    .font(.system(size: 22, weight: .bold))
                     .lineLimit(3)
                 Text(app.artistName.isEmpty ? app.seller : app.artistName)
-                    .font(.system(size: 14))
+                    .font(.system(size: 15))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 if !app.platforms.isEmpty {
@@ -125,49 +134,70 @@ struct AppDetailView: View {
 
     // MARK: Statistics strip
 
+    /// Statistics columns in the App Store's order — ratings, age,
+    /// category, developer, language, size — separated by hairlines.
+    /// (Compatibility lives in Information below, as on the real page.)
+    private var statViews: [AnyView] {
+        var views: [AnyView] = []
+        if app.ratingCount > 0 {
+            views.append(AnyView(
+                StatColumn(value: app.ratingLabel,
+                           caption: app.ratingCountLabel,
+                           rating: app.averageRating)))
+        }
+        if !app.contentAdvisoryRating.isEmpty {
+            views.append(AnyView(
+                VStack(spacing: 3) {
+                    Text(app.contentAdvisoryRating)
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.primary.opacity(0.82))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .strokeBorder(Color.secondary, lineWidth: 1.2)
+                        }
+                        .frame(height: 23)
+                    Text("Age")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(minWidth: 60)))
+        }
+        if !app.primaryGenre.isEmpty {
+            views.append(AnyView(
+                StatColumn(value: app.primaryGenre,
+                           caption: String(localized: "Category"))))
+        }
+        let developer = app.artistName.isEmpty ? app.seller : app.artistName
+        if !developer.isEmpty {
+            views.append(AnyView(
+                StatColumn(value: developer,
+                           caption: String(localized: "Developer"))))
+        }
+        if !app.languageCodes.isEmpty {
+            views.append(AnyView(
+                StatColumn(value: app.languageCodes[0].uppercased(),
+                           caption: app.languageCodes.count > 1
+                               ? String(localized: "+ \(app.languageCodes.count - 1) More")
+                               : String(localized: "Language"))))
+        }
+        if app.byteSize > 0 {
+            views.append(AnyView(
+                StatColumn(value: app.sizeLabel,
+                           caption: String(localized: "Size"))))
+        }
+        return views
+    }
+
     private var statsStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 20) {
-                if app.ratingCount > 0 {
-                    StatColumn(value: app.ratingLabel,
-                               caption: app.ratingCountLabel,
-                               rating: app.averageRating)
-                }
-                if app.contentAdvisoryRating.isEmpty == false {
-                    VStack(spacing: 3) {
-                        Text(app.contentAdvisoryRating)
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(.primary.opacity(0.82))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .strokeBorder(Color.secondary, lineWidth: 1.2)
-                            }
-                            .frame(height: 23)
-                        Text("Age")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
+            HStack(spacing: 16) {
+                ForEach(Array(statViews.enumerated()), id: \.offset) { index, view in
+                    view
+                    if index < statViews.count - 1 {
+                        Divider().frame(height: 36)
                     }
-                    .frame(minWidth: 60)
-                }
-                if !app.primaryGenre.isEmpty {
-                    StatColumn(value: app.primaryGenre,
-                               caption: String(localized: "Category"))
-                }
-                if app.byteSize > 0 {
-                    StatColumn(value: app.sizeLabel,
-                               caption: String(localized: "Size"))
-                }
-                if !app.languageCodes.isEmpty {
-                    StatColumn(value: app.languageCodes[0].uppercased(),
-                               caption: app.languageCodes.count > 1
-                                   ? String(localized: "+ \(app.languageCodes.count - 1) More")
-                                   : String(localized: "Language"))
-                }
-                if !app.minimumOSVersion.isEmpty {
-                    StatColumn(value: "\(app.minimumOSVersion)+",
-                               caption: String(localized: "Minimum iOS"))
                 }
             }
             .padding(.horizontal, 20)
@@ -335,7 +365,7 @@ struct AppDetailView: View {
                 Text(String(localized: "Version \(app.version)"))
                 Spacer()
                 if !app.currentVersionReleaseDate.isEmpty {
-                    Text(String(app.currentVersionReleaseDate.prefix(10)))
+                    Text(app.currentVersionDateFormatted)
                 }
             }
             .font(.system(size: 13))
@@ -382,6 +412,39 @@ struct AppDetailView: View {
         }
     }
 
+    // MARK: Ratings
+
+    /// Aggregate-only Ratings & Reviews header, mirroring the App Store:
+    /// oversized average with "out of 5", stars and the rating count.
+    /// (The store APIs used here expose no histogram or review text.)
+    private var ratingsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Ratings & Reviews")
+            HStack(alignment: .center, spacing: 20) {
+                VStack(spacing: 0) {
+                    Text(app.ratingLabel)
+                        .font(.system(size: 56, weight: .bold))
+                    Text("out of 5")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 6) {
+                    StarRating(rating: app.averageRating, size: 17)
+                    Text(app.ratingCountLabel)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                    if app.currentVersionRatingCount > 0,
+                       app.currentVersionRatingCount != app.ratingCount {
+                        Text(String(localized: "\(String(format: "%.1f", app.currentVersionAverageRating)) for the current version"))
+                            .font(.system(size: 12))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: Information
 
     private var informationRows: [(label: String, value: String)] {
@@ -418,10 +481,10 @@ struct AppDetailView: View {
             rows.append((String(localized: "In-App Purchases"), String(localized: "Yes")))
         }
         if !app.releaseDate.isEmpty {
-            rows.append((String(localized: "Released"), String(app.releaseDate.prefix(10))))
+            rows.append((String(localized: "Released"), app.releaseDateFormatted))
         }
         if !app.currentVersionReleaseDate.isEmpty {
-            rows.append((String(localized: "Updated"), String(app.currentVersionReleaseDate.prefix(10))))
+            rows.append((String(localized: "Updated"), app.currentVersionDateFormatted))
         }
         if let purchaseDate = app.purchaseDate {
             rows.append((String(localized: "Purchased"),

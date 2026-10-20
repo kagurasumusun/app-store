@@ -88,7 +88,7 @@ struct DownloadsView: View {
             if !model.library.isEmpty {
                 storageCard
                     .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
             }
 
             if !model.downloads.isEmpty {
@@ -191,7 +191,7 @@ private struct DownloadRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            AppArtwork(url: item.app.artworkURL, size: 54)
+            AppArtwork(url: item.app.artworkURL, size: 60)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(item.app.name)
@@ -235,7 +235,11 @@ private struct DownloadRow: View {
             Spacer(minLength: 8)
             trailingControl
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 6)
+        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+        .alignmentGuide(.listRowSeparatorLeading) { dimensions in
+            dimensions[.leading] + 72
+        }
     }
 
     @ViewBuilder
@@ -272,10 +276,12 @@ private struct DownloadRow: View {
                 } label: {
                     Text("Install")
                         .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(theme.accentColor)
+                        .padding(.horizontal, 14)
+                        .frame(height: 30)
+                        .background(Capsule().fill(Color(.tertiarySystemFill)))
                 }
-                .buttonStyle(.borderedProminent)
-                .buttonBorderShape(.capsule)
-                .controlSize(.small)
+                .buttonStyle(.plain)
             }
         }
     }
@@ -283,12 +289,13 @@ private struct DownloadRow: View {
 
 private struct LibraryRow: View {
     @Environment(AppModel.self) private var model
+    @Environment(ThemeStore.self) private var theme
     let item: LibraryItem
     let onDelete: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
-            AppArtwork(url: item.artworkURL, size: 54)
+            AppArtwork(url: item.artworkURL, size: 60)
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.name)
                     .font(.system(size: 15, weight: .semibold))
@@ -308,10 +315,12 @@ private struct LibraryRow: View {
             } label: {
                 Text("Install")
                     .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(theme.accentColor)
+                    .padding(.horizontal, 14)
+                    .frame(height: 30)
+                    .background(Capsule().fill(Color(.tertiarySystemFill)))
             }
-            .buttonStyle(.borderedProminent)
-            .buttonBorderShape(.capsule)
-            .controlSize(.small)
+            .buttonStyle(.plain)
             Menu {
                 ShareLink(item: item.fileURL) {
                     Label("Share IPA…", systemImage: "square.and.arrow.up")
@@ -335,7 +344,11 @@ private struct LibraryRow: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 6)
+        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+        .alignmentGuide(.listRowSeparatorLeading) { dimensions in
+            dimensions[.leading] + 72
+        }
     }
 
     private var versionText: String {

@@ -53,7 +53,7 @@ struct PurchasedView: View {
                     }
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 20)
             .padding(.vertical, 8)
         }
     }
@@ -117,12 +117,6 @@ struct PurchasedView: View {
                                     await model.loadOwned()
                                 }
                             }
-                    }
-                } header: {
-                    if model.ownedTotal > 0 {
-                        Text(String(localized: "\(model.ownedTotal) apps"))
-                            .font(.caption)
-                            .textCase(nil)
                     }
                 }
                 if model.isLoadingOwned {
