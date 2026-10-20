@@ -164,26 +164,51 @@ assert metadata["title"] == "Sample <&>"
 print("python OTA manifest validation: ok")
 PY
 
+if [[ "${SKIP_OPENSSL_CHECKS:-0}" == "1" ]]; then
+  echo "openssl checks: skipped (SKIP_OPENSSL_CHECKS=1)"
+  exit 0
+fi
+
+# macOS ships LibreSSL while Linux distributions ship OpenSSL; both print the
+# decoded extensions slightly differently. Compare case-insensitively and dump
+# the decoded text when an expectation fails.
+openssl_version="$(openssl version 2>&1 || true)"
+echo "openssl: ${openssl_version}"
+
+require_pattern() {
+  local text="$1"
+  local pattern="$2"
+  local label="$3"
+  if ! grep -qi -- "${pattern}" <<<"${text}"; then
+    echo "openssl check failed: ${label}" >&2
+    echo "  pattern: ${pattern}" >&2
+    echo "  ${openssl_version}" >&2
+    printf '%s\n' "${text}" >&2
+    exit 1
+  fi
+}
+
 spki_text="$(openssl pkey -pubin -inform DER -in "${fixtures}/test-key.der" -text -noout)"
-grep -q "prime256v1" <<<"${spki_text}"
-grep -q "P-256" <<<"${spki_text}"
+require_pattern "${spki_text}" "prime256v1" "SPKI curve name"
+require_pattern "${spki_text}" "P-256" "SPKI curve"
 echo "openssl SPKI validation: ok"
 
 ca_text="$(openssl x509 -inform DER -in "${fixtures}/test-ca.der" -text -noout)"
-grep -q "CA:TRUE" <<<"${ca_text}"
-grep -q "Certificate Sign" <<<"${ca_text}"
-grep -q "CN = IPAShelf Root CA" <<<"${ca_text}"
+require_pattern "${ca_text}" "CA:TRUE" "CA basic constraints"
+require_pattern "${ca_text}" "Certificate Sign" "CA key usage"
+require_pattern "${ca_text}" "CN *= *IPAShelf Root CA" "CA subject"
 echo "openssl CA certificate validation: ok"
 
 leaf_text="$(openssl x509 -inform DER -in "${fixtures}/test-cert.der" -text -noout)"
-grep -q "CA:FALSE" <<<"${leaf_text}"
-grep -q "DNS:localhost" <<<"${leaf_text}"
-grep -q "DNS:ipashelf.local" <<<"${leaf_text}"
-grep -q "IP Address:127.0.0.1" <<<"${leaf_text}"
-grep -q "IP Address:192.168.1.5" <<<"${leaf_text}"
-grep -q "TLS Web Server Authentication" <<<"${leaf_text}"
-grep -q "Signature Algorithm: ecdsa-with-SHA256" <<<"${leaf_text}"
+require_pattern "${leaf_text}" "CA:FALSE" "leaf basic constraints"
+require_pattern "${leaf_text}" "DNS:localhost" "leaf SAN (localhost)"
+require_pattern "${leaf_text}" "DNS:ipashelf.local" "leaf SAN (host)"
+require_pattern "${leaf_text}" "IP Address:127.0.0.1" "leaf SAN (loopback)"
+require_pattern "${leaf_text}" "IP Address:192.168.1.5" "leaf SAN (LAN)"
+require_pattern "${leaf_text}" "TLS Web Server Authentication" "leaf EKU"
+require_pattern "${leaf_text}" "ecdsa-with-SHA256" "leaf signature algorithm"
 echo "openssl leaf certificate validation: ok"
 
-openssl x509 -in "${fixtures}/test-cert.pem" -noout -subject | grep -q "CN = IPAShelf Device"
+pem_text="$(openssl x509 -in "${fixtures}/test-cert.pem" -noout -subject)"
+require_pattern "${pem_text}" "CN *= *IPAShelf Device" "PEM subject"
 echo "openssl PEM validation: ok"

@@ -154,6 +154,9 @@ jobs:
         env:
           CC: clang
           CXX: clang++
+          # Defer the openssl assertions to a later step so a certificate
+          # formatting difference cannot hide compiler errors.
+          SKIP_OPENSSL_CHECKS: "1"
         run: |
           set -euo pipefail
           mkdir -p build/logs
@@ -194,6 +197,13 @@ jobs:
           # The Swift and Objective-C++ objects must both be in the binary.
           nm -gU "$app_path/IpaStore" | grep -q 'IPInstallServer' && echo "Objective-C++ symbols linked"
           lipo -info "$app_path/IpaStore"
+
+      - name: Validate generated certificates with openssl
+        run: |
+          set -euo pipefail
+          mkdir -p build/logs
+          set -o pipefail
+          bash Scripts/build_core.sh 2>&1 | tee build/logs/fixtures.log
 
       # The raw log is only reachable through the Actions log viewer, so emit
       # annotations for the diagnostics that can be read from the Checks API.
