@@ -17,17 +17,6 @@ env:
   # Keep logs readable and avoid interactive prompts.
   CI: "true"
   GIT_TERMINAL_PROMPT: "0"
-  # Xcode writes a lot of diagnostics; we tee them to a file instead.
-  XCODEBUILD_FLAGS: >-
-    -project IpaStore.xcodeproj
-    -scheme IpaStore
-    -configuration Debug
-    -derivedDataPath build/DerivedData
-    -destination generic/platform=iOS Simulator
-    CODE_SIGNING_ALLOWED=NO
-    CODE_SIGNING_REQUIRED=NO
-    CODE_SIGN_IDENTITY=
-    ENABLE_USER_SCRIPT_SANDBOXING=NO
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -169,21 +158,27 @@ jobs:
           mkdir -p build/logs
           set -o pipefail
           if command -v xcbeautify >/dev/null 2>&1; then
-            xcodebuild $XCODEBUILD_FLAGS build 2>&1 | tee build/logs/simulator.log | xcbeautify
+            bash Scripts/build_app.sh --simulator 2>&1 | tee build/logs/simulator.log | xcbeautify
           else
-            xcodebuild $XCODEBUILD_FLAGS build 2>&1 | tee build/logs/simulator.log
+            bash Scripts/build_app.sh --simulator 2>&1 | tee build/logs/simulator.log
           fi
 
       - name: Build for a generic iOS device (arm64)
         run: |
           set -euo pipefail
           set -o pipefail
-          flags=$(echo "$XCODEBUILD_FLAGS" | sed 's#-destination generic/platform=iOS Simulator#-destination generic/platform=iOS#')
           if command -v xcbeautify >/dev/null 2>&1; then
-            xcodebuild $flags build 2>&1 | tee build/logs/device.log | xcbeautify
+            bash Scripts/build_app.sh --device 2>&1 | tee build/logs/device.log | xcbeautify
           else
-            xcodebuild $flags build 2>&1 | tee build/logs/device.log
+            bash Scripts/build_app.sh --device 2>&1 | tee build/logs/device.log
           fi
+
+      - name: Build Release for the simulator
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          bash Scripts/build_app.sh --simulator --configuration Release \
+            2>&1 | tee build/logs/simulator-release.log
 
       - name: Check the built bundle
         run: |
