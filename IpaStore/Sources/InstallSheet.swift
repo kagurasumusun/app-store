@@ -9,6 +9,7 @@ import UIKit
 struct InstallSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     private var service: InstallService { model.installService }
 
@@ -62,7 +63,14 @@ struct InstallSheet: View {
 
                     Spacer()
 
-                    certificateHelp
+                    if service.rootCertificateTrusted == true {
+                        Label("This device trusts the IPAShelf root certificate",
+                              systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    } else {
+                        certificateHelp
+                    }
 
                     Text("Keep IPAShelf open until iOS finishes downloading the package. The app icon appears on the Home Screen while it installs.")
                         .font(.footnote)
@@ -82,12 +90,21 @@ struct InstallSheet: View {
                     }
                 }
             }
-            .task(id: service.phase == .ready) {
-                // Kick off the system install prompt automatically when the
-                // server is ready; the button above re-opens it on demand.
-                if service.phase == .ready {
+            .task(id: service.phase == .ready && service.rootCertificateTrusted == true) {
+                // Kick off the system install prompt automatically once the
+                // server is ready AND the root certificate is trusted;
+                // opening it earlier just fails silently. When the user
+                // comes back from enabling trust in Settings, the id flips
+                // and the prompt fires on its own.
+                if service.phase == .ready, service.rootCertificateTrusted == true {
                     try? await Task.sleep(for: .milliseconds(350))
                     service.openInstallURL()
+                }
+            }
+            .onAppear { service.refreshTrustStatus() }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active {
+                    service.refreshTrustStatus()
                 }
             }
         }
@@ -104,6 +121,8 @@ struct InstallSheet: View {
         switch service.phase {
         case .preparing:
             return "Preparing…"
+        case .ready where service.rootCertificateTrusted != true:
+            return "One more step: trust the certificate below"
         case .ready:
             return "Ready to Install"
         case .sending(let progress) where progress >= 1:
@@ -139,9 +158,9 @@ struct InstallSheet: View {
 
     private var certificateHelp: some View {
         VStack(spacing: 10) {
-            Text("Nothing happens when you tap Install?")
+            Text("Trust the root certificate first (one time only)")
                 .font(.subheadline.weight(.semibold))
-            Text("The root certificate has to be installed and trusted once: download the profile, install it under Settings › General › VPN & Device Management, then enable “IPAShelf Root CA” under Settings › General › About › Certificate Trust Settings.")
+            Text("Install does nothing until iOS trusts the local certificate: download the profile, install it under Settings › General › VPN & Device Management, then enable “IPAShelf Root CA” under Settings › General › About › Certificate Trust Settings. When you come back here, the install prompt opens automatically.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

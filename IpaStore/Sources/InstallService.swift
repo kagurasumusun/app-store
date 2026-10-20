@@ -22,6 +22,10 @@ final class InstallService {
     var profileURL: URL?
     var certificateFingerprint: String = ""
     var certificateError: String?
+    /// Whether the device currently trusts the root certificate. `nil`
+    /// until first checked; refreshed whenever Settings appears or the
+    /// certificate is (re)generated.
+    var rootCertificateTrusted: Bool?
     var isPresented = false
     var item: LibraryItem?
 
@@ -125,11 +129,24 @@ final class InstallService {
         let result = IPInstallServer.prepareCertificate()
         if let certificate = result.certificate {
             certificateFingerprint = certificate.sha256Fingerprint
+            rootCertificateTrusted = IPInstallServer.rootCertificateIsTrusted(certificate)
             certificateError = nil
             return
         }
         if let error = result.error {
             certificateError = StoreError(error).message
+        }
+    }
+
+    /// Re-evaluates whether the device trusts the root certificate. Cheap
+    /// enough to call whenever Settings or the install sheet appears, so
+    /// the user sees the state flip right after flipping the iOS toggle.
+    func refreshTrustStatus() {
+        guard !certificateFingerprint.isEmpty else { return }
+        let result = IPInstallServer.prepareCertificate()
+        if let certificate = result.certificate {
+            certificateFingerprint = certificate.sha256Fingerprint
+            rootCertificateTrusted = IPInstallServer.rootCertificateIsTrusted(certificate)
         }
     }
 

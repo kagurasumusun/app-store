@@ -92,6 +92,13 @@ typedef NS_ENUM(NSInteger, IPInstallServerState) {
 /// by Settings to show the fingerprint and export the profile.
 + (IPInstallCertificateResult *)prepareCertificate;
 
+/// Whether this device currently trusts the given root certificate as a TLS
+/// anchor — profile installed AND enabled under Certificate Trust Settings.
+/// Evaluated against the system trust store as-is; Settings uses it to show
+/// "not set up yet" versus a ready state instead of guessing.
++ (BOOL)rootCertificateIsTrusted:(IPInstallCertificate *)certificate
+    NS_SWIFT_NAME(rootCertificateIsTrusted(_:));
+
 @end
 
 /// Serves only the root-certificate profile over plain HTTP on loopback, so

@@ -163,12 +163,16 @@ ipashelf::CertificateSigner IPSignerForKey(SecKeyRef key) {
       return ipashelf::make_error(ipashelf::ErrorCode::kSignerUnavailable,
                                   "SecKeyCreateSignature failed");
     }
-    ipashelf::Bytes output;
+    ipashelf::Bytes p1363;
     const auto *bytes =
         static_cast<const std::uint8_t *>(CFDataGetBytePtr(signature));
-    output.assign(bytes, bytes + CFDataGetLength(signature));
+    p1363.assign(bytes, bytes + CFDataGetLength(signature));
     CFRelease(signature);
-    return output;
+    // SecKey emits IEEE P1363 (r || s); X.509 needs DER ECDSA-Sig-Value.
+    // Returning the raw P1363 bytes here used to embed 64 bytes of junk
+    // where a DER SEQUENCE belongs, so no verifier ever accepted the
+    // generated certificates.
+    return ipashelf::ecdsa_signature_p1363_to_der(p1363);
   };
 }
 
@@ -191,15 +195,75 @@ void IPAddCertificateToKeychain(NSData *der, NSString *label) {
   CFRelease(certificate);
 }
 
+// Evaluates a certificate chain (leaf first, DER encoded) with SecTrust.
+// When `anchorDER` is non-nil it is the only trusted anchor; when nil the
+// device trust store decides as-is — which answers "has the user trusted
+// our root yet?" precisely. Generated certificates are run through this
+// before use: a broken encoder fails here instead of hours later at
+// install time, with Apple's own error text attached.
+BOOL IPTrustEvaluates(NSArray<NSData *> *chainDER, NSData *_Nullable anchorDER,
+                      NSString *_Nullable hostname,
+                      NSString *_Nullable *_Nullable detail) {
+  if (detail != NULL) *detail = nil;
+  NSMutableArray *certificates = [NSMutableArray array];
+  for (NSData *der in chainDER) {
+    SecCertificateRef certificate = SecCertificateCreateWithData(
+        kCFAllocatorDefault, (__bridge CFDataRef)der);
+    if (certificate == NULL) {
+      if (detail != NULL) *detail = @"the certificate could not be parsed";
+      return NO;
+    }
+    [certificates addObject:(__bridge id)certificate];
+    CFRelease(certificate);
+  }
+  SecPolicyRef policy = hostname != nil
+                            ? SecPolicyCreateSSL(true, (__bridge CFStringRef)hostname)
+                            : SecPolicyCreateBasicX509();
+  SecTrustRef trust = NULL;
+  const OSStatus status = SecTrustCreateWithCertificates(
+      (__bridge CFArrayRef)certificates, policy, &trust);
+  CFRelease(policy);
+  if (status != errSecSuccess || trust == NULL) {
+    if (detail != NULL) {
+      *detail = [NSString stringWithFormat:@"trust evaluation could not start (OSStatus %d)",
+                                           (int)status];
+    }
+    if (trust != NULL) CFRelease(trust);
+    return NO;
+  }
+  if (anchorDER != nil) {
+    SecCertificateRef anchor = SecCertificateCreateWithData(
+        kCFAllocatorDefault, (__bridge CFDataRef)anchorDER);
+    if (anchor == NULL) {
+      if (detail != NULL) *detail = @"the anchor certificate could not be parsed";
+      CFRelease(trust);
+      return NO;
+    }
+    NSArray *anchors = @[ (__bridge id)anchor ];
+    SecTrustSetAnchorCertificates(trust, (__bridge CFArrayRef)anchors);
+    SecTrustSetAnchorCertificatesOnly(trust, true);
+    CFRelease(anchor);
+  }
+  CFErrorRef cfError = NULL;
+  const BOOL ok = SecTrustEvaluateWithError(trust, &cfError);
+  if (!ok && detail != NULL && cfError != NULL) {
+    CFStringRef description = CFErrorCopyDescription(cfError);
+    if (description != NULL) {
+      *detail = CFBridgingRelease(description);
+    }
+  }
+  if (cfError != NULL) CFRelease(cfError);
+  CFRelease(trust);
+  return ok;
+}
+
 /// Builds an Apple configuration profile that installs the root certificate.
-/// The payload UUID is reused for both the profile and the certificate payload
-/// so iOS shows a single install prompt.
+/// The profile and its certificate payload get distinct UUIDs, and the
+/// certificate bytes travel in the payload's `PayloadContent` — with any
+/// other key, iOS installs an empty profile and no certificate ever lands.
 static NSData *IPProfileMobileConfig(NSData *caDER) {
-  CFUUIDRef uuid = CFUUIDCreate(kCFAllocatorDefault);
-  CFStringRef uuidString = CFUUIDCreateString(kCFAllocatorDefault, uuid);
-  CFRelease(uuid);
-  NSString *payload = (__bridge NSString *)uuidString;
-  CFRelease(uuidString);
+  NSString *profileUUID = [[NSUUID UUID] UUIDString];
+  NSString *payloadUUID = [[NSUUID UUID] UUIDString];
 
   NSString *base64 = [caDER base64EncodedStringWithOptions:0];
   NSString *xml = [NSString stringWithFormat:
@@ -210,7 +274,9 @@ static NSData *IPProfileMobileConfig(NSData *caDER) {
       @"    <key>PayloadContent</key>\n"
       @"    <array>\n"
       @"        <dict>\n"
-      @"            <key>PayloadCertificateFile</key>\n"
+      @"            <key>PayloadCertificateFileName</key>\n"
+      @"            <string>IPAShelf Root CA.cer</string>\n"
+      @"            <key>PayloadContent</key>\n"
       @"            <data>%@</data>\n"
       @"            <key>PayloadDescription</key>\n"
       @"            <string>IPAShelf Root CA</string>\n"
@@ -246,7 +312,7 @@ static NSData *IPProfileMobileConfig(NSData *caDER) {
       @"    <integer>1</integer>\n"
       @"</dict>\n"
       @"</plist>\n",
-      base64, payload, payload];
+      base64, payloadUUID, profileUUID];
   return [xml dataUsingEncoding:NSUTF8StringEncoding];
 }
 
@@ -710,6 +776,13 @@ struct ConnectionState {
                                                            error:error];
 }
 
++ (BOOL)rootCertificateIsTrusted:(IPInstallCertificate *)certificate {
+  if (certificate.der.length == 0) return NO;
+  // No explicit anchors: the device trust store decides, which includes
+  // user-installed roots only once their trust toggle is on.
+  return IPTrustEvaluates(@[ certificate.der ], nil, nil, NULL);
+}
+
 - (BOOL)start {
   NSError *error = nil;
   const BOOL started = [self startWithError:&error];
@@ -745,6 +818,13 @@ struct ConnectionState {
                                          (__bridge CFDataRef)caDER)
                                    : NULL;
   if (existing != NULL && !IPCertificateMatchesKey(existing, caKey)) {
+    CFRelease(existing);
+    existing = NULL;
+  }
+  if (existing != NULL && !IPTrustEvaluates(@[ caDER ], caDER, nil, NULL)) {
+    // Older builds persisted certificates whose encodings no verifier
+    // accepts (bad signature format, parameterized algorithm). The key
+    // itself is fine, so keep it and regenerate the certificate over it.
     CFRelease(existing);
     existing = NULL;
   }
@@ -788,7 +868,35 @@ struct ConnectionState {
     }
     caDER = [NSData dataWithBytes:der.value().data()
                            length:der.value().size()];
+    // Prove the new certificate is real before persisting or serving it:
+    // it must parse and its self-signature must verify. Silently serving
+    // an unparseable certificate is how the old encoder went unnoticed.
+    existing = SecCertificateCreateWithData(kCFAllocatorDefault,
+                                            (__bridge CFDataRef)caDER);
+    if (existing == NULL) {
+      CFRelease(caKey);
+      if (error != NULL) {
+        *error = IPInstallError(
+            IPStoreErrorInternal,
+            @"The generated root certificate could not be parsed.");
+      }
+      return nil;
+    }
+    NSString *trustDetail = nil;
+    if (!IPTrustEvaluates(@[ caDER ], caDER, nil, &trustDetail)) {
+      CFRelease(existing);
+      CFRelease(caKey);
+      if (error != NULL) {
+        *error = IPInstallError(
+            IPStoreErrorInternal,
+            [NSString stringWithFormat:
+                          @"The generated root certificate does not verify: %@",
+                          trustDetail ?: @"unknown error"]);
+      }
+      return nil;
+    }
     if (![caDER writeToFile:caPath atomically:YES]) {
+      CFRelease(existing);
       CFRelease(caKey);
       if (error != NULL) {
         *error = IPInstallError(IPStoreErrorStorage,
@@ -796,13 +904,9 @@ struct ConnectionState {
       }
       return nil;
     }
-    existing = SecCertificateCreateWithData(kCFAllocatorDefault,
-                                            (__bridge CFDataRef)caDER);
   }
-  if (existing != NULL) {
-    IPAddCertificateToKeychain(caDER, @"IPAShelf Install CA");
-    CFRelease(existing);
-  }
+  IPAddCertificateToKeychain(caDER, @"IPAShelf Install CA");
+  CFRelease(existing);
   CFRelease(caKey);
   return [[IPInstallCertificate alloc] initWithCommonName:@"IPAShelf Root CA"
                                                      der:caDER];
@@ -885,6 +989,12 @@ struct ConnectionState {
   for (const auto &address : IPLocalIPv4Bytes()) {
     options.alt_names.push_back(ipashelf::SubjectAltName{"", address});
   }
+  NSData *caPoint = IPPublicKeyPoint(caKey);
+  if (caPoint.length == 65) {
+    const auto *caBytes = static_cast<const std::uint8_t *>(caPoint.bytes);
+    options.authority_key_id = ipashelf::ec_key_identifier(
+        ipashelf::Bytes(caBytes, caBytes + caPoint.length));
+  }
   auto leafDER = ipashelf::build_ec_certificate(options, spki.value(),
                                                 IPSignerForKey(caKey));
   CFRelease(caKey);
@@ -899,6 +1009,23 @@ struct ConnectionState {
   }
   NSData *leafCertificate = [NSData dataWithBytes:leafDER.value().data()
                                            length:leafDER.value().size()];
+  // Verify the whole chain the way the installing system service will:
+  // if this fails, installs would fail opaquely minutes later.
+  NSString *trustDetail = nil;
+  if (!IPTrustEvaluates(@[ leafCertificate, certificate.der ],
+                        certificate.der, @"localhost", &trustDetail)) {
+    CFRelease(leafKey);
+    if (error != NULL) {
+      *error = IPInstallError(
+          IPStoreErrorSignerUnavailable,
+          [NSString stringWithFormat:
+                        @"The install-server certificate does not verify: %@",
+                        trustDetail ?: @"unknown error"]);
+    }
+    [self setState:IPInstallServerStateFailed progress:0
+            message:@"Certificate invalid"];
+    return NO;
+  }
   IPAddCertificateToKeychain(leafCertificate, @"IPAShelf Install Leaf");
   _identity = IPCopyIdentityForCertificate(leafCertificate);
   CFRelease(leafKey);

@@ -35,6 +35,7 @@ struct SettingsView: View {
             }
             .onAppear {
                 installService.prepareCertificate()
+                installService.refreshTrustStatus()
                 model.refreshLibrary()
             }
         }
@@ -52,6 +53,19 @@ struct SettingsView: View {
                 } else {
                     Text("Not created")
                         .foregroundStyle(.tertiary)
+                }
+            }
+            if installService.hasCertificate {
+                HStack {
+                    Text("Trust on this device")
+                    Spacer()
+                    if installService.rootCertificateTrusted == true {
+                        Label("Trusted", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    } else {
+                        Label("Not trusted yet", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
                 }
             }
             Button {
