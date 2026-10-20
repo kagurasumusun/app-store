@@ -269,7 +269,7 @@ final class StoreService: @unchecked Sendable {
                   account: StoreAccount,
                   externalVersionID: String?,
                   platform: StorePlatform,
-                  progress: @escaping (Double, Int64, Int64) -> Void) async throws -> URL {
+                  progress: @escaping @Sendable (Double, Int64, Int64) -> Void) async throws -> URL {
         guard let handle = app.handle else {
             throw StoreError(code: .invalidResponse, message: "Missing app handle.")
         }
