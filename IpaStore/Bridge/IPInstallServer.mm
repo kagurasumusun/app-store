@@ -176,23 +176,46 @@ ipashelf::CertificateSigner IPSignerForKey(SecKeyRef key) {
   };
 }
 
-void IPAddCertificateToKeychain(NSData *der, NSString *label) {
-  NSDictionary *deleteQuery = @{
+// Adds the certificate to the keychain, replacing any previous item with
+// the same label. The SecIdentity synthesis the TLS listener depends on
+// only happens when an add actually lands, so the status matters: a
+// silently ignored errSecDuplicateItem (same issuer + serial from an
+// earlier run, possibly under a different label) used to surface later
+// as an opaque "identity unavailable" startup failure.
+OSStatus IPAddCertificateToKeychain(NSData *der, NSString *label) {
+  SecCertificateRef certificate = SecCertificateCreateWithData(
+      kCFAllocatorDefault, (__bridge CFDataRef)der);
+  if (certificate == NULL) return errSecInternalError;
+
+  NSDictionary *deleteByLabel = @{
     (__bridge id)kSecClass : (__bridge id)kSecClassCertificate,
     (__bridge id)kSecAttrLabel : label,
   };
-  SecItemDelete((__bridge CFDictionaryRef)deleteQuery);
+  SecItemDelete((__bridge CFDictionaryRef)deleteByLabel);
 
-  SecCertificateRef certificate = SecCertificateCreateWithData(
-      kCFAllocatorDefault, (__bridge CFDataRef)der);
-  if (certificate == NULL) return;
   NSDictionary *attributes = @{
     (__bridge id)kSecClass : (__bridge id)kSecClassCertificate,
     (__bridge id)kSecValueRef : (__bridge id)certificate,
     (__bridge id)kSecAttrLabel : label,
   };
-  SecItemAdd((__bridge CFDictionaryRef)attributes, NULL);
+  OSStatus status = SecItemAdd((__bridge CFDictionaryRef)attributes, NULL);
+  if (status == errSecDuplicateItem) {
+    // An item with the same (issuer, serial) identity exists without our
+    // label — delete by certificate reference and retry once.
+    NSDictionary *deleteByRef = @{
+      (__bridge id)kSecClass : (__bridge id)kSecClassCertificate,
+      (__bridge id)kSecValueRef : (__bridge id)certificate,
+    };
+    SecItemDelete((__bridge CFDictionaryRef)deleteByRef);
+    status = SecItemAdd((__bridge CFDictionaryRef)attributes, NULL);
+  }
+  if (status != errSecSuccess) {
+    NSLog(@"IPAShelf: adding certificate %@ to the keychain failed "
+          @"(OSStatus %d)",
+          label, (int)status);
+  }
   CFRelease(certificate);
+  return status;
 }
 
 // Evaluates a certificate chain (leaf first, DER encoded) with SecTrust.
@@ -301,16 +324,23 @@ static NSData *IPProfileMobileConfig(NSData *caDER) {
   return data ?: [NSData data];
 }
 
-SecIdentityRef IPCopyIdentityForCertificate(NSData *der) CF_RETURNS_RETAINED {
+// Finds the identity whose certificate equals `der` by enumerating every
+// identity in the keychain. `statusOut` receives the SecItemCopyMatching
+// status so callers can surface *why* the identity is unavailable (e.g.
+// errSecMissingEntitlement on a sideloaded build) instead of a bare nil.
+SecIdentityRef IPCopyIdentityForCertificate(NSData *der, OSStatus *statusOut)
+    CF_RETURNS_RETAINED {
+  if (statusOut != NULL) *statusOut = errSecItemNotFound;
   NSDictionary *query = @{
     (__bridge id)kSecClass : (__bridge id)kSecClassIdentity,
     (__bridge id)kSecReturnRef : @YES,
     (__bridge id)kSecMatchLimit : (__bridge id)kSecMatchLimitAll,
   };
   CFTypeRef items = NULL;
-  if (SecItemCopyMatching((__bridge CFDictionaryRef)query, &items) !=
-          errSecSuccess ||
-      items == NULL) {
+  OSStatus status =
+      SecItemCopyMatching((__bridge CFDictionaryRef)query, &items);
+  if (statusOut != NULL) *statusOut = status;
+  if (status != errSecSuccess || items == NULL) {
     return NULL;
   }
   SecIdentityRef found = NULL;
@@ -335,6 +365,60 @@ SecIdentityRef IPCopyIdentityForCertificate(NSData *der) CF_RETURNS_RETAINED {
   }
   CFRelease(items);
   return found;
+}
+
+// Prefers a targeted identity lookup by the key's public-key hash — the
+// identity paired with *this* key — over enumerating all identities.
+// Enumeration misses the identity whenever the certificate item was
+// replaced by a stale duplicate, and it can also fail wholesale on some
+// keychain states; the targeted query asks for exactly one identity.
+// Falls back to enumeration when the targeted query finds nothing (or
+// finds an identity whose certificate is not `der`, e.g. after the leaf
+// was regenerated under the same key).
+SecIdentityRef IPCopyIdentityForKeyAndCertificate(SecKeyRef key, NSData *der,
+                                                  OSStatus *statusOut)
+    CF_RETURNS_RETAINED {
+  if (statusOut != NULL) *statusOut = errSecItemNotFound;
+  SecKeyRef publicKey = SecKeyCopyPublicKey(key);
+  if (publicKey != NULL) {
+    CFDictionaryRef attributes = SecKeyCopyAttributes(publicKey);
+    CFRelease(publicKey);
+    if (attributes != NULL) {
+      CFTypeRef hash = CFDictionaryGetValue(attributes, kSecAttrPublicKeyHash);
+      if (hash != NULL && CFGetTypeID(hash) == CFDataGetTypeID()) {
+        NSDictionary *query = @{
+          (__bridge id)kSecClass : (__bridge id)kSecClassIdentity,
+          (__bridge id)kSecAttrPublicKeyHash : (__bridge id)hash,
+          (__bridge id)kSecReturnRef : @YES,
+        };
+        CFTypeRef item = NULL;
+        OSStatus status =
+            SecItemCopyMatching((__bridge CFDictionaryRef)query, &item);
+        if (statusOut != NULL) *statusOut = status;
+        if (status == errSecSuccess && item != NULL &&
+            CFGetTypeID(item) == SecIdentityGetTypeID()) {
+          SecIdentityRef identity = (SecIdentityRef)item;
+          SecCertificateRef certificate = NULL;
+          bool matches = false;
+          if (SecIdentityCopyCertificate(identity, &certificate) ==
+                  errSecSuccess &&
+              certificate != NULL) {
+            CFDataRef data = SecCertificateCopyData(certificate);
+            matches = data != NULL && CFEqual(data, (__bridge CFDataRef)der);
+            if (data != NULL) CFRelease(data);
+            CFRelease(certificate);
+          }
+          if (matches) {
+            CFRelease(attributes);
+            return identity;  // SecItemCopyMatching returns +1.
+          }
+        }
+        if (item != NULL) CFRelease(item);
+      }
+      CFRelease(attributes);
+    }
+  }
+  return IPCopyIdentityForCertificate(der, statusOut);
 }
 
 bool IPCertificateMatchesKey(SecCertificateRef certificate, SecKeyRef key) {
@@ -959,65 +1043,110 @@ struct ConnectionState {
     return NO;
   }
 
-  ipashelf::CertificateOptions options;
-  options.subject.common_name = "IPAShelf Device";
-  options.subject.organization = "IPAShelf";
-  options.issuer.common_name = "IPAShelf Root CA";
-  options.issuer.organization = "IPAShelf";
-  options.issuer.country = "US";
-  options.serial = 2;
-  options.not_before = std::time(nullptr) - 24 * 60 * 60;
-  options.validity_seconds = 2ULL * 365 * 24 * 60 * 60;
-  options.alt_names.push_back(ipashelf::SubjectAltName{"localhost", std::nullopt});
-  options.alt_names.push_back(
-      ipashelf::SubjectAltName{"ipashelf.local", std::nullopt});
-  for (const auto &address : IPLocalIPv4Bytes()) {
-    options.alt_names.push_back(ipashelf::SubjectAltName{"", address});
-  }
-  NSData *caPoint = IPPublicKeyPoint(caKey);
-  if (caPoint.length == 65) {
-    const auto *caBytes = static_cast<const std::uint8_t *>(caPoint.bytes);
-    options.authority_key_id = ipashelf::ec_key_identifier(
-        ipashelf::Bytes(caBytes, caBytes + caPoint.length));
-  }
-  auto leafDER = ipashelf::build_ec_certificate(options, spki.value(),
-                                                IPSignerForKey(caKey));
-  CFRelease(caKey);
-  if (!leafDER) {
-    CFRelease(leafKey);
-    if (error != NULL) {
-      *error = IPInstallError(IPStoreErrorSignerUnavailable,
-                              @"Could not sign the leaf certificate.");
+  // Reuse the persisted leaf while it still matches the key and verifies
+  // against the current root. Regenerating on every start churns the
+  // keychain certificate item (same issuer + serial each time), and a
+  // stale duplicate makes the identity lookup below fail — one stable
+  // leaf, replaced only when it no longer validates, avoids that class
+  // of startup failure entirely.
+  NSString *leafPath = [IPCertificateDirectory()
+      stringByAppendingPathComponent:@"leaf.der"];
+  NSData *leafCertificate = nil;
+  {
+    NSData *savedLeaf = [NSData dataWithContentsOfFile:leafPath];
+    NSDictionary *fileAttributes =
+        [[NSFileManager defaultManager] attributesOfItemAtPath:leafPath
+                                                         error:nil];
+    NSDate *modified = fileAttributes[NSFileModificationDate];
+    // Leaves are issued for two years; refresh well before expiry.
+    const BOOL freshEnough =
+        modified != nil &&
+        -[modified timeIntervalSinceNow] < 18.0 * 30 * 24 * 60 * 60;
+    if (savedLeaf.length > 0 && freshEnough) {
+      SecCertificateRef savedCertificate = SecCertificateCreateWithData(
+          kCFAllocatorDefault, (__bridge CFDataRef)savedLeaf);
+      if (savedCertificate != NULL) {
+        if (IPCertificateMatchesKey(savedCertificate, leafKey) &&
+            IPTrustEvaluates(@[ savedLeaf, certificate.der ],
+                             certificate.der, @"127.0.0.1", nil)) {
+          leafCertificate = savedLeaf;
+        }
+        CFRelease(savedCertificate);
+      }
     }
-    [self setState:IPInstallServerStateFailed progress:0 message:@"Signing"];
-    return NO;
   }
-  NSData *leafCertificate = [NSData dataWithBytes:leafDER.value().data()
-                                           length:leafDER.value().size()];
-  // Verify the whole chain the way the installing system service will:
-  // if this fails, installs would fail opaquely minutes later.
-  NSString *trustDetail = nil;
-  if (!IPTrustEvaluates(@[ leafCertificate, certificate.der ],
-                        certificate.der, @"127.0.0.1", &trustDetail)) {
-    CFRelease(leafKey);
+  if (leafCertificate == nil) {
+    ipashelf::CertificateOptions options;
+    options.subject.common_name = "IPAShelf Device";
+    options.subject.organization = "IPAShelf";
+    options.issuer.common_name = "IPAShelf Root CA";
+    options.issuer.organization = "IPAShelf";
+    options.issuer.country = "US";
+    options.serial = 2;
+    options.not_before = std::time(nullptr) - 24 * 60 * 60;
+    options.validity_seconds = 2ULL * 365 * 24 * 60 * 60;
+    options.alt_names.push_back(
+        ipashelf::SubjectAltName{"localhost", std::nullopt});
+    options.alt_names.push_back(
+        ipashelf::SubjectAltName{"ipashelf.local", std::nullopt});
+    for (const auto &address : IPLocalIPv4Bytes()) {
+      options.alt_names.push_back(ipashelf::SubjectAltName{"", address});
+    }
+    NSData *caPoint = IPPublicKeyPoint(caKey);
+    if (caPoint.length == 65) {
+      const auto *caBytes = static_cast<const std::uint8_t *>(caPoint.bytes);
+      options.authority_key_id = ipashelf::ec_key_identifier(
+          ipashelf::Bytes(caBytes, caBytes + caPoint.length));
+    }
+    auto leafDER = ipashelf::build_ec_certificate(options, spki.value(),
+                                                  IPSignerForKey(caKey));
+    CFRelease(caKey);
+    if (!leafDER) {
+      CFRelease(leafKey);
+      if (error != NULL) {
+        *error = IPInstallError(IPStoreErrorSignerUnavailable,
+                                @"Could not sign the leaf certificate.");
+      }
+      [self setState:IPInstallServerStateFailed progress:0 message:@"Signing"];
+      return NO;
+    }
+    leafCertificate = [NSData dataWithBytes:leafDER.value().data()
+                                     length:leafDER.value().size()];
+    // Verify the whole chain the way the installing system service will:
+    // if this fails, installs would fail opaquely minutes later.
+    NSString *trustDetail = nil;
+    if (!IPTrustEvaluates(@[ leafCertificate, certificate.der ],
+                          certificate.der, @"127.0.0.1", &trustDetail)) {
+      CFRelease(leafKey);
+      if (error != NULL) {
+        *error = IPInstallError(
+            IPStoreErrorSignerUnavailable,
+            [NSString stringWithFormat:
+                          @"The install-server certificate does not verify: %@",
+                          trustDetail ?: @"unknown error"]);
+      }
+      [self setState:IPInstallServerStateFailed progress:0
+              message:@"Certificate invalid"];
+      return NO;
+    }
+    // Best effort: a failed write only costs a rebuild next start.
+    [leafCertificate writeToFile:leafPath atomically:YES];
+  } else {
+    CFRelease(caKey);
+  }
+  IPAddCertificateToKeychain(leafCertificate, @"IPAShelf Install Leaf");
+  OSStatus identityStatus = errSecSuccess;
+  _identity = IPCopyIdentityForKeyAndCertificate(leafKey, leafCertificate,
+                                                 &identityStatus);
+  CFRelease(leafKey);
+  if (_identity == NULL) {
     if (error != NULL) {
       *error = IPInstallError(
           IPStoreErrorSignerUnavailable,
           [NSString stringWithFormat:
-                        @"The install-server certificate does not verify: %@",
-                        trustDetail ?: @"unknown error"]);
-    }
-    [self setState:IPInstallServerStateFailed progress:0
-            message:@"Certificate invalid"];
-    return NO;
-  }
-  IPAddCertificateToKeychain(leafCertificate, @"IPAShelf Install Leaf");
-  _identity = IPCopyIdentityForCertificate(leafCertificate);
-  CFRelease(leafKey);
-  if (_identity == NULL) {
-    if (error != NULL) {
-      *error = IPInstallError(IPStoreErrorSignerUnavailable,
-                              @"iOS did not expose the certificate identity.");
+                        @"iOS did not expose the certificate identity "
+                        @"(OSStatus %d).",
+                        (int)identityStatus]);
     }
     [self setState:IPInstallServerStateFailed progress:0
             message:@"Identity unavailable"];
@@ -1035,6 +1164,14 @@ struct ConnectionState {
     return NO;
   }
   if (![self startPlainServerWithError:error]) {
+    // Do not leave the TLS listener running with the server marked
+    // failed: a later start would double-bind and fail in confusing
+    // ways.
+    if (_listener != NULL) {
+      nw_listener_cancel(_listener);
+      _listener = NULL;
+    }
+    _tlsPort = 0;
     [self setState:IPInstallServerStateFailed progress:0 message:@"HTTP failed"];
     return NO;
   }
@@ -1087,12 +1224,22 @@ struct ConnectionState {
 
   __block dispatch_semaphore_t ready = dispatch_semaphore_create(0);
   __block bool failed = false;
+  __block NSString *listenerDetail = nil;
   nw_listener_set_state_changed_handler(
       listener, ^(nw_listener_state_t state, nw_error_t nwError) {
         if (state == nw_listener_state_ready) {
           dispatch_semaphore_signal(ready);
         } else if (state == nw_listener_state_failed) {
           failed = true;
+          if (nwError != NULL) {
+            // Domain: 1 = POSIX, 2 = DNS, 3 = TLS. Surfacing the code
+            // turns an opaque startup failure into something diagnosable
+            // (e.g. TLS -9813 for an identity the system rejected).
+            listenerDetail = [NSString
+                stringWithFormat:@"network error domain %d, code %d",
+                                 (int)nw_error_get_error_domain(nwError),
+                                 nw_error_get_error_code(nwError)];
+          }
           dispatch_semaphore_signal(ready);
         }
       });
@@ -1114,8 +1261,13 @@ struct ConnectionState {
   if (dispatch_semaphore_wait(ready, deadline) != 0 || failed) {
     nw_listener_cancel(listener);
     if (error != NULL) {
-      *error = IPInstallError(IPStoreErrorNetwork,
-                              @"The install listener did not start.");
+      *error = IPInstallError(
+          IPStoreErrorNetwork,
+          listenerDetail != nil
+              ? [NSString stringWithFormat:
+                              @"The install listener did not start (%@).",
+                              listenerDetail]
+              : @"The install listener did not start.");
     }
     return NO;
   }
