@@ -3,11 +3,21 @@
 // SAP backend backed by the frameworks Apple ships with iOS.
 //
 // The App Store authenticates every request with an Apple-signed action
-// signature. On macOS the signature is produced by CoreFP; iOS carries the same
-// primitives in CoreFP/AppleMediaServices even though no public API exposes
-// them. This file resolves the private entry points at runtime and calls them
-// directly. If a future OS removes them, IPCreateSAPBackend reports that the
-// signer is unavailable instead of sending unsigned credentials.
+// signature. On macOS the signature is produced by CoreFP; iOS carries the
+// same primitives in CoreFP/AppleMediaServices even though no public API
+// exposes them. This file resolves the private entry points at runtime and
+// calls them directly. If a future OS removes them, IPCreateSAPBackend
+// reports that the signer is unavailable instead of sending unsigned
+// credentials.
+//
+// Hardware identity:
+//   The SAP setup call takes a 24-byte block: a little-endian u32 length
+//   prefix followed by the 1-20 byte hardware identity. This matches the
+//   layout ipashelf::HardwareIdentity::sap_block() produces. On iOS there is
+//   no public MAC address API, so the app persists a random six-byte identity
+//   in the Keychain (see IPDeviceIdentity.mm). Unsigned builds cannot access
+//   the Keychain, so every launch would generate a fresh identity and SAP
+//   signing would fail; sign the app before testing on a real device.
 
 #import <Foundation/Foundation.h>
 
@@ -77,6 +87,18 @@ constexpr SapSymbolCandidates kSapSymbolCandidates{
     },
 };
 
+/// Framework search order. CoreFP is the primary carrier of the SAP
+/// primitives; AppleMediaServices and CommerceKit/CommerceCore are fallbacks
+/// observed on other iOS releases.
+constexpr const char *kSapFrameworkCandidates[] = {
+    "/System/Library/PrivateFrameworks/CoreFP.framework/CoreFP",
+    "/System/Library/PrivateFrameworks/AppleMediaServices.framework/"
+    "AppleMediaServices",
+    "/System/Library/PrivateFrameworks/CommerceKit.framework/CommerceKit",
+    "/System/Library/PrivateFrameworks/CommerceCore.framework/CommerceCore",
+    "/usr/lib/libAppleSSE.dylib",
+};
+
 template <typename Fn>
 static Fn FindSapSymbol(const std::vector<void *> &images,
                         const char *const *candidates) {
@@ -87,17 +109,12 @@ static Fn FindSapSymbol(const std::vector<void *> &images,
   return nullptr;
 }
 
-struct SAPSymbols {
-  InitializeFn initialize = nullptr;
-  ExchangeFn exchange = nullptr;
-  SignFn sign = nullptr;
-  TeardownFn teardown = nullptr;
-  DisposeFn dispose = nullptr;
-  std::string problem;
-};
-
 void *OpenImage(const char *path) {
   void *handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+  if (handle == nullptr) {
+    NSLog(@"IPAShelf: could not load SAP framework %s: %s", path,
+          dlerror() ?: "unknown error");
+  }
   return handle;
 }
 
@@ -116,36 +133,66 @@ void *FindSymbol(const std::vector<void *> &images, const char *name) {
   return nullptr;
 }
 
+/// Records which framework supplied each entry point, for diagnostics.
+struct SAPSymbols {
+  InitializeFn initialize = nullptr;
+  ExchangeFn exchange = nullptr;
+  SignFn sign = nullptr;
+  TeardownFn teardown = nullptr;
+  DisposeFn dispose = nullptr;
+  const char *initialize_from = nullptr;
+  const char *exchange_from = nullptr;
+  const char *sign_from = nullptr;
+  const char *teardown_from = nullptr;
+  const char *dispose_from = nullptr;
+  std::string problem;
+};
+
+template <typename Fn>
+static Fn FindSapSymbolFrom(const std::vector<void *> &images,
+                            const char *const *candidates,
+                            const char *&from_out) {
+  for (std::size_t index = 0; candidates[index] != nullptr; ++index) {
+    if (Fn symbol = reinterpret_cast<Fn>(FindSymbol(images, candidates[index]))) {
+      from_out = candidates[index];
+      return symbol;
+    }
+  }
+  from_out = nullptr;
+  return nullptr;
+}
+
 SAPSymbols &Symbols() {
   static SAPSymbols symbols;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
-    const std::vector<std::string> candidates = {
-        "/System/Library/PrivateFrameworks/CoreFP.framework/CoreFP",
-        "/System/Library/PrivateFrameworks/AppleMediaServices.framework/"
-        "AppleMediaServices",
-        "/System/Library/PrivateFrameworks/CommerceKit.framework/CommerceKit",
-        "/System/Library/PrivateFrameworks/CommerceCore.framework/CommerceCore",
-        "/usr/lib/libAppleSSE.dylib",
-    };
     std::vector<void *> images;
-    for (const auto &path : candidates) {
-      void *handle = OpenImage(path.c_str());
-      if (handle != nullptr) images.push_back(handle);
+    std::vector<const char *> loaded;
+    for (const char *path : kSapFrameworkCandidates) {
+      void *handle = OpenImage(path);
+      if (handle != nullptr) {
+        images.push_back(handle);
+        loaded.push_back(path);
+      }
     }
     // The dynamic loader also searches already-loaded images.
     images.push_back(nullptr);
 
     symbols.initialize =
-        FindSapSymbol<InitializeFn>(images, kSapSymbolCandidates.initialize);
+        FindSapSymbolFrom<InitializeFn>(images, kSapSymbolCandidates.initialize,
+                                        symbols.initialize_from);
     symbols.exchange =
-        FindSapSymbol<ExchangeFn>(images, kSapSymbolCandidates.exchange);
+        FindSapSymbolFrom<ExchangeFn>(images, kSapSymbolCandidates.exchange,
+                                      symbols.exchange_from);
     symbols.sign =
-        FindSapSymbol<SignFn>(images, kSapSymbolCandidates.sign);
+        FindSapSymbolFrom<SignFn>(images, kSapSymbolCandidates.sign,
+                                  symbols.sign_from);
     symbols.teardown =
-        FindSapSymbol<TeardownFn>(images, kSapSymbolCandidates.teardown);
+        FindSapSymbolFrom<TeardownFn>(images, kSapSymbolCandidates.teardown,
+                                      symbols.teardown_from);
     symbols.dispose =
-        FindSapSymbol<DisposeFn>(images, kSapSymbolCandidates.dispose);
+        FindSapSymbolFrom<DisposeFn>(images, kSapSymbolCandidates.dispose,
+                                     symbols.dispose_from);
 
     if (symbols.initialize == nullptr || symbols.exchange == nullptr ||
         symbols.sign == nullptr || symbols.teardown == nullptr ||
@@ -161,12 +208,27 @@ SAPSymbols &Symbols() {
         if (index > 0) detail += ", ";
         detail += missing[index];
       }
+      std::string loaded_detail;
+      for (std::size_t index = 0; index < loaded.size(); ++index) {
+        if (index > 0) loaded_detail += ", ";
+        loaded_detail += loaded[index];
+      }
       symbols.problem =
-          "SAP entry points missing (" + detail + "). App Store signed-in "
-          "features require a physical iPhone or iPad; the Simulator does not "
-          "ship CoreFP. On iOS 27 the obfuscated entry-point names may have "
-          "changed; rebuild with updated symbol candidates in "
-          "IpaStore/Bridge/IPSAPBackend.mm.";
+          "SAP entry points missing (" + detail + "). Loaded frameworks: " +
+          loaded_detail +
+          ". App Store signed-in features require a physical iPhone or iPad; "
+          "the Simulator does not ship CoreFP. On iOS 27 the obfuscated "
+          "entry-point names may have changed; rebuild with updated symbol "
+          "candidates in IpaStore/Bridge/IPSAPBackend.mm.";
+      NSLog(@"IPAShelf: %s", symbols.problem.c_str());
+    } else {
+      NSLog(@"IPAShelf: SAP backend ready (initialize=%s, exchange=%s, "
+            "sign=%s, teardown=%s, dispose=%s)",
+            symbols.initialize_from ?: "?",
+            symbols.exchange_from ?: "?",
+            symbols.sign_from ?: "?",
+            symbols.teardown_from ?: "?",
+            symbols.dispose_from ?: "?");
     }
   });
   return symbols;
@@ -186,6 +248,23 @@ class IPAppleSAPBackend final : public ipashelf::SapBackend {
       return ipashelf::make_error(ipashelf::ErrorCode::kInvalidArgument,
                                   "empty hardware block");
     }
+    // The SAP setup block is 24 bytes: LE u32 length prefix followed by the
+    // 1-20 byte hardware identity. ipashelf::HardwareIdentity::sap_block()
+    // produces exactly this layout.
+    if (hardware_block.size() < 4) {
+      return ipashelf::make_error(
+          ipashelf::ErrorCode::kInvalidArgument,
+          "hardware block too short (need at least 4-byte length prefix)");
+    }
+    std::uint32_t declared = 0;
+    std::memcpy(&declared, hardware_block.data(), 4);
+    if (declared < 1 || declared > 20 ||
+        declared + 4 > hardware_block.size()) {
+      return ipashelf::make_error(
+          ipashelf::ErrorCode::kInvalidArgument,
+          "hardware block length prefix is inconsistent with block size");
+    }
+
     std::lock_guard<std::mutex> lock(mutex_);
     std::uint64_t context = 0;
     std::vector<std::uint8_t> block(hardware_block);
@@ -195,11 +274,14 @@ class IPAppleSAPBackend final : public ipashelf::SapBackend {
     if (status != 0) {
       return ipashelf::make_error(
           ipashelf::ErrorCode::kSignerUnavailable,
-          "SAP initialization failed (" + std::to_string(status) + ")");
+          "SAP initialization failed (status " + std::to_string(status) +
+              "); the hardware identity may be invalid or the device may not "
+          "support App Store signing");
     }
     if (context == 0) {
-      return ipashelf::make_error(ipashelf::ErrorCode::kSignerUnavailable,
-                                  "SAP initialization returned no context");
+      return ipashelf::make_error(
+          ipashelf::ErrorCode::kSignerUnavailable,
+          "SAP initialization returned no context");
     }
     return context;
   }
@@ -221,7 +303,7 @@ class IPAppleSAPBackend final : public ipashelf::SapBackend {
     if (status != 0) {
       return ipashelf::make_error(
           ipashelf::ErrorCode::kSignerUnavailable,
-          "SAP exchange failed (" + std::to_string(status) + ")");
+          "SAP exchange failed (status " + std::to_string(status) + ")");
     }
     ipashelf::Bytes result;
     if (output != nullptr && output_length > 0) {
@@ -246,7 +328,7 @@ class IPAppleSAPBackend final : public ipashelf::SapBackend {
     if (status != 0) {
       return ipashelf::make_error(
           ipashelf::ErrorCode::kSignerUnavailable,
-          "SAP signing failed (" + std::to_string(status) + ")");
+          "SAP signing failed (status " + std::to_string(status) + ")");
     }
     ipashelf::Bytes result;
     if (output != nullptr && output_length > 0) {
@@ -269,8 +351,8 @@ class IPAppleSAPBackend final : public ipashelf::SapBackend {
     const int32_t status = Symbols().teardown(context);
     if (status != 0) {
       return ipashelf::fail(ipashelf::ErrorCode::kSignerUnavailable,
-                            "SAP teardown failed (" + std::to_string(status) +
-                                ")");
+                            "SAP teardown failed (status " +
+                                std::to_string(status) + ")");
     }
     return ipashelf::ok_status();
   }

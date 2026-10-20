@@ -17,14 +17,21 @@ ipashelf::HardwareIdentity IPHardwareIdentity(void) {
         identity = parsed.value();
         return;
       }
+      NSLog(@"IPAShelf: stored hardware identity is invalid; regenerating");
     }
     identity = ipashelf::HardwareIdentity::random();
     NSString *hex = [NSString
         stringWithUTF8String:ipashelf::hex_encode(identity.bytes, true).c_str()];
     NSError *error = nil;
     if (![IPKeychain setString:hex ?: @"" forKey:@"hardware-identity" error:&error]) {
-      NSLog(@"IPAShelf: could not persist hardware identity: %@",
+      NSLog(@"IPAShelf: could not persist hardware identity to Keychain: %@. "
+            "Unsigned builds cannot access the Keychain, so SAP signing will "
+            "fail on every launch. Sign the app with a development/distribution "
+            "identity before testing sign-in on a real device.",
             error.localizedDescription);
+    } else {
+      NSLog(@"IPAShelf: hardware identity persisted (guid=%@)",
+            [NSString stringWithUTF8String:identity.guid().c_str()]);
     }
   });
   return identity;
