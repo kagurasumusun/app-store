@@ -19,8 +19,6 @@ namespace ipashelf {
 namespace {
 
 constexpr std::string_view kITunesHost = "itunes.apple.com";
-constexpr std::string_view kAuthPath =
-    "/WebObjects/MZFinance.woa/wa/authenticate";
 constexpr std::string_view kPurchasePath =
     "/WebObjects/MZFinance.woa/wa/buyProduct";
 constexpr std::string_view kVolumePath =
