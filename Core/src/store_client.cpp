@@ -35,6 +35,15 @@ constexpr std::string_view kProductTypeApp = "C";
 constexpr std::string_view kPricingStandard = "STDQ";
 constexpr std::string_view kPricingArcade = "GAME";
 
+// Defined with the download plumbing below; declared here so the purchase
+// path can share the redirect-replaying POST helper.
+bool is_store_buy_host(std::string_view host);
+Result<HttpResponse> send_store_post(
+    HttpTransport& transport, const std::string& url,
+    const HttpHeaders& headers, const Bytes& body,
+    const std::function<bool(const Url&)>& approve_redirect,
+    const CancellationToken& token);
+
 bool valid_region(std::string_view region) {
   if (region.size() != 2) return false;
   return std::isalpha(static_cast<unsigned char>(region[0])) != 0 &&
@@ -975,8 +984,23 @@ Result<HttpResponse> StoreClient::send_plist_post(
     if (!signature) return signature.error();
     request.headers.set("X-Apple-ActionSignature",
                         base64_encode(signature.value()));
+    request.follow_redirects = false;
+    return transport_.send(request, token);
   }
-  return transport_.send(request, token);
+  // Unsigned plist posts (purchases) are redirected between store pods and
+  // must be replayed verbatim, like the legacy download endpoints.
+  auto origin = Url::parse(url);
+  const std::string expected_path = origin ? origin.value().path : "";
+  return send_store_post(
+      transport_, url, request.headers, request.body,
+      [expected_path](const Url& target) {
+        return target.https() && target.userinfo.empty() &&
+               target.fragment.empty() &&
+               (!target.port.has_value() || *target.port == 443) &&
+               is_store_buy_host(target.host) &&
+               target.path == expected_path;
+      },
+      token);
 }
 
 std::string build_search_url(const SearchQuery& query) {
@@ -1370,15 +1394,85 @@ struct DownloadDocument {
   int http_status = 0;
 };
 
+bool is_store_buy_host(std::string_view host) {
+  const std::string lower = to_lower(host);
+  return lower == "buy.itunes.apple.com" ||
+         ends_with(lower, "-buy.itunes.apple.com");
+}
+
+bool is_store_redirect(int status) {
+  return status == 301 || status == 302 || status == 303 || status == 307 ||
+         status == 308;
+}
+
+// Approval rule for redirects between the legacy download endpoints: the
+// volume store on a buy host, the MZFinance redownload route on a buy host,
+// or the DownloadDispatch redownload/update routes.
+bool approve_download_redirect(const Url& url) {
+  if (!url.https() || !url.userinfo.empty() || !url.fragment.empty()) {
+    return false;
+  }
+  if (url.port.has_value() && *url.port != 443) return false;
+  if (is_store_buy_host(url.host)) {
+    return url.path == kVolumePath ||
+           url.path == "/WebObjects/MZFinance.woa/wa/redownloadProduct";
+  }
+  if (to_lower(url.host) == "downloaddispatch.itunes.apple.com") {
+    return url.path == "/r/redownload" || url.path == "/up/updateProduct";
+  }
+  return false;
+}
+
+// Apple store endpoints redirect clients between pods and expect the
+// identical POST to be replayed at the new location. Generic HTTP redirect
+// handling converts a POST into a bodyless GET, which these endpoints
+// reject, so redirects are followed manually and every target must be
+// approved by the caller-supplied rule.
+Result<HttpResponse> send_store_post(
+    HttpTransport& transport, const std::string& url,
+    const HttpHeaders& headers, const Bytes& body,
+    const std::function<bool(const Url&)>& approve_redirect,
+    const CancellationToken& token) {
+  constexpr int kMaxRedirects = 4;
+  std::string current = url;
+  for (int hop = 0;; ++hop) {
+    if (token.cancelled()) {
+      return make_error(ErrorCode::kCancelled, "request cancelled");
+    }
+    HttpRequest request;
+    request.method = "POST";
+    request.url = current;
+    request.headers = headers;
+    request.body = body;
+    request.follow_redirects = false;
+    auto response = transport.send(request, token);
+    if (!response) return response.error();
+    if (!is_store_redirect(response.value().status)) return response;
+
+    const std::string location = trim(response.value().header("Location"));
+    if (location.empty() || hop >= kMaxRedirects) {
+      return Error{ErrorCode::kHttpStatus,
+                   "store endpoint redirect could not be followed (HTTP " +
+                       std::to_string(response.value().status) + ")",
+                   response.value().status};
+    }
+    auto resolved = resolve_url(current, location);
+    auto target = resolved ? Url::parse(resolved.value())
+                           : Result<Url>(resolved.error());
+    if (!target || !approve_redirect(target.value())) {
+      return make_error(ErrorCode::kParse,
+                        "store endpoint redirected to an unexpected URL");
+    }
+    current = resolved.value();
+  }
+}
+
 Result<DownloadDocument> post_download_document(
     HttpTransport& transport, const std::string& url, const Bytes& body,
     const HttpHeaders& headers, const CancellationToken& token) {
-  HttpRequest request;
-  request.method = "POST";
-  request.url = url;
-  request.headers = headers;
-  request.body = body;
-  auto response = transport.send(request, token);
+  auto response =
+      send_store_post(transport, url, headers, body,
+                      approve_download_redirect, token);
   if (!response) return response.error();
   if (response.value().status != 200) {
     return Error{ErrorCode::kHttpStatus,
@@ -1419,6 +1513,15 @@ bool is_unavailable_message(std::string_view message) {
   const std::string lowered = to_lower(trim(message));
   return lowered == "no longer available" ||
          ends_with(lowered, " no longer available");
+}
+
+// The volume store answers some owned-app requests with failure 5002 and no
+// items even though redownload can serve them; treat that shape like the
+// empty responses and move on instead of failing the whole download.
+bool is_license_conflict_response(const DownloadDocument& document) {
+  return document.http_status == 200 &&
+         document.root.string_or("failureType") == "5002" &&
+         download_item_count(document.root) == 0;
 }
 
 // Limit recovery to the observed availability response; other customer
@@ -1775,13 +1878,15 @@ Result<DownloadOffer> StoreClient::send_download_product(
                                "externalVersionId", version);
   if (!volume) return volume.error();
   if (!is_empty_download_response(volume.value()) &&
-      !is_unavailable_download_response(volume.value())) {
+      !is_unavailable_download_response(volume.value()) &&
+      !is_license_conflict_response(volume.value())) {
     return interpret_download_response(volume.value().root, app, version,
                                         false);
   }
 
-  // Try redownload when the volume store returns no items, either silently
-  // or with the message-only "No Longer Available" response.
+  // Try redownload when the volume store returns no items, either silently,
+  // with the message-only "No Longer Available" response, or with the
+  // itemless 5002 license conflict.
   if (!bag) {
     auto fetched = fetch_bag(hardware, token);
     if (!fetched) return fetched.error();
@@ -2020,314 +2125,16 @@ Result<AppVersions> StoreClient::version_list(
 }
 
 // ---------------------------------------------------------------------------
-// Version metadata via partial zip
+// Version metadata
 //
-// The download API can return stale version and release date values, so the
-// package's own Info.plist is the source of truth. Only the zip tail, the
-// central directory and the Info.plist entry are fetched, with HTTP range
-// requests — the package itself is never downloaded here.
+// A version-pinned download response describes its own build: the item
+// metadata carries the marketing version and release date, and the
+// metadata's external identifier has already been verified against the
+// requested build by the download path. That is enough to label historical
+// versions without fetching any part of the package.
 // ---------------------------------------------------------------------------
 
 namespace {
-
-struct RemoteFile {
-  HttpTransport& transport;
-  std::string url;
-  std::string user_agent;
-  std::uint64_t size = 0;
-
-  Result<Bytes> read(std::uint64_t offset, std::size_t count,
-                     const CancellationToken& token) const {
-    if (count == 0) return Bytes{};
-    if (offset >= size) {
-      return make_error(ErrorCode::kParse, "range read beyond package end");
-    }
-    const std::uint64_t end =
-        std::min(size - 1, offset + static_cast<std::uint64_t>(count) - 1);
-    HttpRequest request;
-    request.method = "GET";
-    request.url = url;
-    request.headers.set("Accept-Encoding", "identity");
-    request.headers.set("User-Agent", user_agent);
-    request.range_start = offset;
-    request.range_end = end;
-    auto response = transport.send(request, token);
-    if (!response) return response.error();
-    if (response.value().status != 206) {
-      return Error{ErrorCode::kHttpStatus,
-                   "expected partial content response, got HTTP " +
-                       std::to_string(response.value().status),
-                   response.value().status};
-    }
-    if (response.value().body.size() != end - offset + 1) {
-      return make_error(ErrorCode::kParse,
-                        "short read from package range request");
-    }
-    return std::move(response.value().body);
-  }
-};
-
-Result<std::uint64_t> remote_file_size(HttpTransport& transport,
-                                       const std::string& url,
-                                       const std::string& user_agent,
-                                       const CancellationToken& token) {
-  HttpRequest request;
-  request.method = "GET";
-  request.url = url;
-  request.headers.set("Accept-Encoding", "identity");
-  request.headers.set("User-Agent", user_agent);
-  request.range_start = 0;
-  request.range_end = 0;
-  auto response = transport.send(request, token);
-  if (!response) return response.error();
-  if (response.value().status != 206) {
-    return Error{ErrorCode::kHttpStatus,
-                 "expected partial content response, got HTTP " +
-                     std::to_string(response.value().status),
-                 response.value().status};
-  }
-  const std::string range = response.value().header("Content-Range");
-  const std::size_t slash = range.rfind('/');
-  if (slash == std::string::npos || slash + 1 >= range.size() ||
-      range[slash + 1] == '*') {
-    return make_error(ErrorCode::kParse, "invalid Content-Range header");
-  }
-  char* end = nullptr;
-  const unsigned long long size =
-      std::strtoull(range.c_str() + slash + 1, &end, 10);
-  if (end == nullptr || *end != '\0') {
-    return make_error(ErrorCode::kParse, "invalid Content-Range size");
-  }
-  return static_cast<std::uint64_t>(size);
-}
-
-std::uint16_t read_le16(const std::uint8_t* bytes) {
-  return static_cast<std::uint16_t>(bytes[0] | (bytes[1] << 8));
-}
-
-std::uint32_t read_le32(const std::uint8_t* bytes) {
-  return static_cast<std::uint32_t>(bytes[0]) |
-         (static_cast<std::uint32_t>(bytes[1]) << 8) |
-         (static_cast<std::uint32_t>(bytes[2]) << 16) |
-         (static_cast<std::uint32_t>(bytes[3]) << 24);
-}
-
-std::uint64_t read_le64(const std::uint8_t* bytes) {
-  return static_cast<std::uint64_t>(read_le32(bytes)) |
-         (static_cast<std::uint64_t>(read_le32(bytes + 4)) << 32);
-}
-
-struct ZipEntry {
-  std::string name;
-  std::uint16_t method = 0;
-  std::uint16_t mod_time = 0;
-  std::uint16_t mod_date = 0;
-  std::uint64_t compressed_size = 0;
-  std::uint64_t uncompressed_size = 0;
-  std::uint64_t local_offset = 0;
-};
-
-Result<std::vector<ZipEntry>> read_remote_zip_directory(
-    const RemoteFile& file, const CancellationToken& token) {
-  if (file.size < 22) {
-    return make_error(ErrorCode::kParse, "package is too small to be a zip");
-  }
-  const std::size_t tail_size =
-      static_cast<std::size_t>(std::min<std::uint64_t>(file.size, 65557));
-  auto tail = file.read(file.size - tail_size, tail_size, token);
-  if (!tail) return tail.error();
-
-  // Locate the end of central directory record (scanning backwards so a
-  // signature inside the trailing comment cannot win).
-  std::size_t eocd_offset = 0;
-  bool found = false;
-  for (std::size_t index = tail.value().size() - 22;; --index) {
-    const std::uint8_t* at = tail.value().data() + index;
-    if (at[0] == 0x50 && at[1] == 0x4b && at[2] == 0x05 && at[3] == 0x06 &&
-        index + 22 + read_le16(at + 20) == tail.value().size()) {
-      eocd_offset = index;
-      found = true;
-      break;
-    }
-    if (index == 0) break;
-  }
-  if (!found) {
-    return make_error(ErrorCode::kParse,
-                      "package has no zip end of central directory");
-  }
-  const std::uint8_t* eocd = tail.value().data() + eocd_offset;
-  std::uint64_t entries = read_le16(eocd + 10);
-  std::uint64_t directory_size = read_le32(eocd + 12);
-  std::uint64_t directory_offset = read_le32(eocd + 16);
-
-  if (entries == 0xffff || directory_size == 0xffffffffu ||
-      directory_offset == 0xffffffffu) {
-    // Zip64: the locator sits immediately before the classic record.
-    if (eocd_offset < 20) {
-      return make_error(ErrorCode::kParse, "zip64 locator is missing");
-    }
-    const std::uint8_t* locator = eocd - 20;
-    if (locator[0] != 0x50 || locator[1] != 0x4b || locator[2] != 0x06 ||
-        locator[3] != 0x07) {
-      return make_error(ErrorCode::kParse, "zip64 locator is invalid");
-    }
-    const std::uint64_t zip64_offset = read_le64(locator + 8);
-    auto zip64 = file.read(zip64_offset, 56, token);
-    if (!zip64) return zip64.error();
-    const std::uint8_t* record = zip64.value().data();
-    if (zip64.value().size() < 56 || record[0] != 0x50 || record[1] != 0x4b ||
-        record[2] != 0x06 || record[3] != 0x06) {
-      return make_error(ErrorCode::kParse, "zip64 directory is invalid");
-    }
-    entries = read_le64(record + 32);
-    directory_size = read_le64(record + 40);
-    directory_offset = read_le64(record + 48);
-  }
-
-  if (entries > 200000 || directory_size > 64u * 1024 * 1024 ||
-      directory_offset + directory_size > file.size) {
-    return make_error(ErrorCode::kParse, "zip directory is implausible");
-  }
-  auto directory = directory_size == 0
-                       ? Result<Bytes>(Bytes{})
-                       : file.read(directory_offset,
-                                   static_cast<std::size_t>(directory_size),
-                                   token);
-  if (!directory) return directory.error();
-
-  std::vector<ZipEntry> result;
-  std::size_t offset = 0;
-  for (std::uint64_t index = 0; index < entries; ++index) {
-    if (offset + 46 > directory.value().size()) {
-      return make_error(ErrorCode::kParse, "zip directory is truncated");
-    }
-    const std::uint8_t* at = directory.value().data() + offset;
-    if (at[0] != 0x50 || at[1] != 0x4b || at[2] != 0x01 || at[3] != 0x02) {
-      return make_error(ErrorCode::kParse, "zip directory entry is invalid");
-    }
-    ZipEntry entry;
-    entry.method = read_le16(at + 10);
-    entry.mod_time = read_le16(at + 12);
-    entry.mod_date = read_le16(at + 14);
-    entry.compressed_size = read_le32(at + 20);
-    entry.uncompressed_size = read_le32(at + 24);
-    const std::size_t name_size = read_le16(at + 28);
-    const std::size_t extra_size = read_le16(at + 30);
-    const std::size_t comment_size = read_le16(at + 32);
-    entry.local_offset = read_le32(at + 42);
-    if (offset + 46 + name_size + extra_size + comment_size >
-        directory.value().size()) {
-      return make_error(ErrorCode::kParse, "zip directory is truncated");
-    }
-    entry.name.assign(reinterpret_cast<const char*>(at + 46), name_size);
-    // Zip64 extra field overrides the 0xffffffff placeholders in order:
-    // uncompressed size, compressed size, local offset, disk.
-    const std::uint8_t* extra = at + 46 + name_size;
-    std::size_t extra_read = 0;
-    while (extra_read + 4 <= extra_size) {
-      const std::uint16_t field = read_le16(extra + extra_read);
-      const std::size_t field_size = read_le16(extra + extra_read + 2);
-      extra_read += 4;
-      if (extra_read + field_size > extra_size) break;
-      if (field == 0x0001) {
-        const std::uint8_t* value = extra + extra_read;
-        std::size_t value_read = 0;
-        const auto take64 = [&](std::uint64_t& target) {
-          if (value_read + 8 <= field_size) {
-            target = read_le64(value + value_read);
-            value_read += 8;
-          }
-        };
-        if (entry.uncompressed_size == 0xffffffffu) {
-          take64(entry.uncompressed_size);
-        }
-        if (entry.compressed_size == 0xffffffffu) {
-          take64(entry.compressed_size);
-        }
-        if (entry.local_offset == 0xffffffffu) {
-          take64(entry.local_offset);
-        }
-      }
-      extra_read += field_size;
-    }
-    result.push_back(std::move(entry));
-    offset += 46 + name_size + extra_size + comment_size;
-  }
-  return result;
-}
-
-Result<Bytes> read_remote_zip_entry(const RemoteFile& file,
-                                    const ZipEntry& entry,
-                                    const CancellationToken& token) {
-  auto header = file.read(entry.local_offset, 30, token);
-  if (!header) return header.error();
-  const std::uint8_t* at = header.value().data();
-  if (header.value().size() < 30 || at[0] != 0x50 || at[1] != 0x4b ||
-      at[2] != 0x03 || at[3] != 0x04) {
-    return make_error(ErrorCode::kParse, "zip local header is invalid");
-  }
-  const std::uint64_t data_offset = entry.local_offset + 30 +
-                                    read_le16(at + 26) + read_le16(at + 28);
-  if (entry.uncompressed_size > 4u * 1024 * 1024 ||
-      entry.compressed_size > 64u * 1024 * 1024) {
-    return make_error(ErrorCode::kParse, "zip entry is implausibly large");
-  }
-  auto compressed =
-      file.read(data_offset, static_cast<std::size_t>(entry.compressed_size),
-                token);
-  if (!compressed) return compressed.error();
-  if (entry.method == 0) return compressed;
-  if (entry.method != 8) {
-    return make_error(ErrorCode::kUnsupported,
-                      "unsupported zip compression method");
-  }
-  Bytes output(static_cast<std::size_t>(entry.uncompressed_size));
-  mz_stream stream{};
-  stream.next_in = compressed.value().data();
-  stream.avail_in =
-      static_cast<unsigned int>(compressed.value().size());
-  stream.next_out = output.data();
-  stream.avail_out = static_cast<unsigned int>(output.size());
-  if (mz_inflateInit2(&stream, -MZ_DEFAULT_WINDOW_BITS) != MZ_OK) {
-    return make_error(ErrorCode::kInternal, "cannot initialise inflate");
-  }
-  const int status = mz_inflate(&stream, MZ_FINISH);
-  const std::size_t produced = stream.total_out;
-  mz_inflateEnd(&stream);
-  if (status != MZ_STREAM_END && status != MZ_OK) {
-    return make_error(ErrorCode::kParse, "cannot inflate zip entry");
-  }
-  output.resize(produced);
-  return output;
-}
-
-bool is_main_info_plist_path(std::string_view name) {
-  std::vector<std::string_view> parts;
-  std::size_t start = 0;
-  while (start <= name.size()) {
-    const std::size_t slash = name.find('/', start);
-    if (slash == std::string_view::npos) {
-      parts.push_back(name.substr(start));
-      break;
-    }
-    parts.push_back(name.substr(start, slash - start));
-    start = slash + 1;
-  }
-  return parts.size() == 3 && parts[0] == "Payload" &&
-         ends_with(parts[1], ".app") && parts[2] == "Info.plist";
-}
-
-std::int64_t dos_datetime_to_unix(std::uint16_t date, std::uint16_t time) {
-  const unsigned year = ((date >> 9) & 0x7f) + 1980;
-  const unsigned month = (date >> 5) & 0x0f;
-  const unsigned day = date & 0x1f;
-  const unsigned hour = (time >> 11) & 0x1f;
-  const unsigned minute = (time >> 5) & 0x3f;
-  const unsigned second = (time & 0x1f) * 2;
-  if (month < 1 || month > 12 || day < 1 || day > 31) return 0;
-  return days_from_civil(year, month, day) * 86400 + hour * 3600 +
-         minute * 60 + second;
-}
 
 bool parse_release_date_string(std::string_view text, std::int64_t& epoch) {
   const std::string value = trim(text);
@@ -2420,92 +2227,23 @@ Result<AppVersionMetadata> StoreClient::version_metadata(
     std::string_view external_version_id, Platform platform,
     const CancellationToken& token) {
   if (platform == Platform::kUnspecified) platform = Platform::kIPhone;
-  if (platform == Platform::kMacOS) {
-    // Native Mac packages are installer archives, not IPAs; reading their
-    // metadata requires the Mac package pipeline, which this client does
-    // not implement (the iOS app cannot install them either).
-    return make_error(ErrorCode::kUnsupported,
-                      "macOS package version metadata is not supported");
-  }
   auto offer =
       download_offer(account, app, external_version_id, platform, token);
   if (!offer) return offer.error();
-  if (offer.value().url.empty()) {
-    return make_error(ErrorCode::kParse, "download offer has no package URL");
-  }
-
-  // Do not fall back to the item metadata: the download API can return
-  // stale version and release date values, so the IPA's Info.plist is the
-  // source of truth and failures stay visible.
-  auto size = remote_file_size(transport_, offer.value().url,
-                               configuration_.user_agent, token);
-  if (!size) return size.error();
-  RemoteFile file{transport_, offer.value().url, configuration_.user_agent,
-                  size.value()};
-  auto entries = read_remote_zip_directory(file, token);
-  if (!entries) return entries.error();
-  const ZipEntry* info_entry = nullptr;
-  for (const ZipEntry& entry : entries.value()) {
-    if (is_main_info_plist_path(entry.name)) {
-      info_entry = &entry;
-      break;
-    }
-  }
-  if (info_entry == nullptr) {
-    return make_error(ErrorCode::kParse,
-                      "could not find Info.plist in the package");
-  }
-  auto info_bytes = read_remote_zip_entry(file, *info_entry, token);
-  if (!info_bytes) return info_bytes.error();
-  auto info = PlistValue::parse(info_bytes.value());
-  if (!info) return info.error();
-  if (!info.value().is_dictionary()) {
-    return make_error(ErrorCode::kParse, "Info.plist is not a dictionary");
-  }
 
   AppVersionMetadata metadata;
-  for (const char* key :
-       {"CFBundleShortVersionString", "bundleShortVersionString"}) {
-    if (auto value = info.value().string_for(key); value && !value->empty()) {
-      metadata.display_version = trim(*value);
-      break;
-    }
-  }
+  metadata.display_version = trim(offer.value().display_version);
   if (metadata.display_version.empty()) {
-    return make_error(ErrorCode::kParse,
-                      "Info.plist does not contain a display version");
+    return make_error(
+        ErrorCode::kParse,
+        "download response does not name the build's display version");
   }
-
-  bool have_date = false;
-  for (const char* key : {"releaseDate", "ReleaseDate"}) {
-    const PlistValue* value = info.value().find(key);
-    if (value == nullptr) continue;
-    if (value->is_string() || value->type() == PlistValue::Type::kDate) {
-      if (!parse_release_date_string(value->string_value(),
-                                     metadata.release_date_unix)) {
-        return make_error(ErrorCode::kParse,
-                          "failed to parse Info.plist release date");
-      }
-      have_date = true;
-    } else if (value->is_integer()) {
-      metadata.release_date_unix = value->integer_value();
-      have_date = true;
-    } else if (value->is_real()) {
-      metadata.release_date_unix =
-          static_cast<std::int64_t>(value->real_value());
-      have_date = true;
-    } else {
-      return make_error(ErrorCode::kParse,
-                        "unsupported Info.plist release date type");
-    }
-    break;
-  }
-  if (!have_date) {
-    metadata.release_date_unix =
-        dos_datetime_to_unix(info_entry->mod_date, info_entry->mod_time);
-    if (metadata.release_date_unix == 0) {
-      return make_error(ErrorCode::kParse,
-                        "Info.plist does not contain a release date");
+  // The release date is a display nicety; a missing or unrecognized value
+  // leaves the row undated instead of failing the lookup.
+  if (auto value = offer.value().metadata.string_for("releaseDate")) {
+    std::int64_t epoch = 0;
+    if (parse_release_date_string(*value, epoch)) {
+      metadata.release_date_unix = epoch;
     }
   }
   return metadata;

@@ -117,14 +117,6 @@ std::string build_itms_services_url(std::string_view manifest_url) {
          percent_encode(manifest_url);
 }
 
-std::string build_install_page(const OtaManifest& manifest,
-                               std::string_view certificate_url) {
-  return build_install_page(manifest.title, manifest.bundle_id,
-                            manifest.display_version,
-                            build_itms_services_url(manifest.payload_url),
-                            certificate_url);
-}
-
 std::string build_install_page(std::string_view page_title,
                                std::string_view bundle_id,
                                std::string_view display_version,

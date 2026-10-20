@@ -260,6 +260,8 @@ ipashelf::PlistValue make_download_reply(std::int64_t item_id = 0) {
   }
   metadata.set("bundleShortVersionString",
                ipashelf::PlistValue::string("3.1.4"));
+  metadata.set("releaseDate",
+               ipashelf::PlistValue::string("2025-03-04T05:06:07Z"));
   metadata.set("softwareVersionExternalIdentifier",
                ipashelf::PlistValue::string("9001"));
   metadata.set("softwareVersionBundleId",
@@ -991,6 +993,66 @@ void test_download_fallback() {
   }
 }
 
+void test_download_redirect_replay() {
+  using namespace ipashelf;
+  FakeTransport transport;
+  StoreConfiguration configuration;
+  configuration.sleep = [](std::chrono::milliseconds) {};
+  StoreClient client(transport, configuration);
+  CancellationSource source;
+
+  Account account;
+  account.directory_services_id = "1";
+  account.device_id = "AABBCCDDEEFF";
+  account.region = "us";
+
+  App app;
+  app.id = 42;
+  app.bundle_id = "com.example.sample";
+
+  // The volume store answers with a pod redirect. Apple expects the
+  // identical POST to be replayed at the new location; a generic redirect
+  // follow would turn it into a bodyless GET and the request would fail.
+  HttpHeaders redirect_headers;
+  redirect_headers.set(
+      "Location",
+      "https://p25-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/"
+      "volumeStoreDownloadProduct?guid=AABBCCDDEEFF");
+  transport.enqueue_response(302, "", redirect_headers);
+  transport.enqueue_plist(make_download_reply());
+
+  auto offer = client.download_offer(account, app, "9001", Platform::kIPhone,
+                                     source.token());
+  expect(offer.has_value(), "download survives a pod redirect");
+  if (!offer) {
+    std::cerr << "  redirect replay error: " << offer.error().message << "\n";
+  }
+  expect_eq(transport.requests.size(), std::size_t{2}, "two requests");
+  if (transport.requests.size() == 2) {
+    const auto& replay = transport.requests[1];
+    expect_eq(replay.method, std::string("POST"), "redirect replays POST");
+    expect(replay.url.find("p25-buy.itunes.apple.com") != std::string::npos,
+           "redirect target pod");
+    expect(!replay.body.empty(), "redirect keeps the plist body");
+    expect(!replay.follow_redirects, "store posts never auto-follow");
+    expect(transport.requests[0].body == replay.body,
+           "redirect replays the identical body");
+  }
+
+  // A redirect to an unexpected host must be refused.
+  FakeTransport hostile;
+  StoreClient hostile_client(hostile, configuration);
+  HttpHeaders hostile_headers;
+  hostile_headers.set("Location", "https://example.com/steal");
+  hostile.enqueue_response(302, "", hostile_headers);
+  auto refused = hostile_client.download_offer(account, app, "9001",
+                                               Platform::kIPhone,
+                                               source.token());
+  expect(!refused.has_value(), "unexpected redirect host is refused");
+  expect_eq(hostile.requests.size(), std::size_t{1},
+            "hostile redirect is not followed");
+}
+
 void test_purchase() {
   using namespace ipashelf;
   FakeTransport transport;
@@ -1097,7 +1159,7 @@ void test_download_parsing() {
   if (offer) {
     expect_eq(offer.value().bundle_id, std::string("com.example.sample"),
               "parsed bundle id");
-    expect_eq(offer.value().metadata.size(), std::size_t{4}, "metadata keys");
+    expect_eq(offer.value().metadata.size(), std::size_t{5}, "metadata keys");
   }
 
   PlistValue failure = PlistValue::dictionary();
@@ -1590,12 +1652,8 @@ void test_owned_apps() {
   expect(!too_big.has_value(), "limit above the DAAP maximum rejected");
 }
 
-void test_version_metadata(const std::string& fixtures) {
+void test_version_metadata(const std::string&) {
   using namespace ipashelf;
-  const Bytes package = read_file(fixtures + "/sample.ipa");
-  expect(!package.empty(), "sample IPA fixture present");
-  if (package.empty()) return;
-
   FakeTransport transport;
   StoreConfiguration configuration;
   configuration.sleep = [](std::chrono::milliseconds) {};
@@ -1611,42 +1669,23 @@ void test_version_metadata(const std::string& fixtures) {
   app.bundle_id = "com.example.sample";
 
   transport.enqueue_plist(make_download_reply());
-  for (int index = 0; index < 8; ++index) {
-    transport.enqueue([package](const HttpRequest& request) {
-      HttpResponse response;
-      response.status = 206;
-      const std::uint64_t begin = request.range_start.value_or(0);
-      const std::uint64_t end =
-          request.range_end.value_or(package.size() - 1);
-      response.body.assign(package.begin() + static_cast<std::ptrdiff_t>(begin),
-                           package.begin() +
-                               static_cast<std::ptrdiff_t>(end + 1));
-      response.headers.set("Content-Range",
-                           "bytes " + std::to_string(begin) + "-" +
-                               std::to_string(end) + "/" +
-                               std::to_string(package.size()));
-      return Result<HttpResponse>(response);
-    });
-  }
 
   auto metadata =
       client.version_metadata(account, app, "9001", Platform::kIPhone,
                               source.token());
-  expect(metadata.has_value(), "version metadata resolves from the package");
+  expect(metadata.has_value(), "version metadata resolves");
   if (!metadata) {
     std::cerr << "  version metadata error: " << metadata.error().message
               << "\n";
     return;
   }
   expect_eq(metadata.value().display_version, std::string("3.1.4"),
-            "display version from Info.plist");
-  expect(metadata.value().release_date_unix > 1700000000,
-         "release date falls back to the zip entry time");
-  bool used_ranges = false;
-  for (const auto& request : transport.requests) {
-    if (request.range_start.has_value()) used_ranges = true;
-  }
-  expect(used_ranges, "partial zip uses range requests");
+            "display version from the download metadata");
+  // 2025-03-04T05:06:07Z
+  expect_eq(metadata.value().release_date_unix, std::int64_t{1741064767},
+            "release date from the download metadata");
+  expect_eq(transport.requests.size(), std::size_t{1},
+            "version metadata needs only the pinned download response");
 }
 
 void test_account_json() {
@@ -2156,7 +2195,9 @@ void test_ota_manifest(const std::string& fixtures) {
              std::string::npos,
          "manifest url is percent encoded");
 
-  const std::string page = build_install_page(manifest, "https://x/ca.der");
+  const std::string page = build_install_page(
+      manifest.title, manifest.bundle_id, manifest.display_version, install,
+      "https://x/ca.der");
   expect(page.find("Install on this device") != std::string::npos,
          "install page link");
   expect(page.find("Sample &lt;&amp;&gt;") != std::string::npos,
@@ -3047,6 +3088,7 @@ int main(int argc, char** argv) {
   test_latest_external_version();
   test_download_offer();
   test_download_fallback();
+  test_download_redirect_replay();
   test_purchase();
   test_purchase_license_exists();
   test_version_identifiers();

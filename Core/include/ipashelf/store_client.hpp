@@ -86,8 +86,9 @@ struct AppVersions {
   std::string latest;
 };
 
-/// Display version and release date read from the package itself (the item
-/// metadata served by the download API can be stale).
+/// Display version and release date of one build, read from the item
+/// metadata of the version-pinned download response (whose own external
+/// identifier is verified against the request before use).
 struct AppVersionMetadata {
   std::string display_version;
   std::int64_t release_date_unix = 0;

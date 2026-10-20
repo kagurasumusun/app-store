@@ -58,11 +58,9 @@ struct OtaManifest {
 
 /// A small HTML landing page with the install link and an optional link to the
 /// root certificate the user must trust first. Written for Safari on iOS.
-[[nodiscard]] std::string build_install_page(const OtaManifest& manifest,
-                                             std::string_view certificate_url);
-
-/// Explicit form used by the certificate server, where the install link points
-/// at the HTTPS listener while the page itself is served over plain HTTP.
+/// `install_link` is the full `itms-services` URL of the manifest (see
+/// `build_itms_services_url`); the page is often served over plain HTTP while
+/// the manifest stays on the HTTPS listener.
 [[nodiscard]] std::string build_install_page(std::string_view title,
                                              std::string_view bundle_id,
                                              std::string_view display_version,
