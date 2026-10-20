@@ -5,9 +5,12 @@ import Foundation
 /// Swift-facing wrapper around the Objective-C++ bridge. Every call runs on the
 /// bridge's serial queue and resumes the caller on the main actor because the
 /// Objective-C facade delivers completions on the main queue.
-final class StoreService {
+///
+/// `@unchecked Sendable` is sound here: the only stored property is the
+/// bridge singleton, which serializes all work on its own queue; this class
+/// itself keeps no mutable state.
+final class StoreService: @unchecked Sendable {
     private let bridge = IPStoreService.shared
-    private let isoFormatter = ISO8601DateFormatter()
 
     var accounts: [StoreAccount] {
         bridge.accounts.map(StoreAccount.init(handle:))

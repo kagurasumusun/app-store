@@ -280,6 +280,9 @@ bash Scripts/check_static.sh          # Swift 構文・ブリッジ API・pbxpro
 ## 謝辞
 
 - [miniz](https://github.com/richgel999/miniz) — MIT License
+- SAP v200 の相互運用定数テーブル（`ThirdParty/sap-tables`）—
+  ApplePackage プロジェクト（Lakr233、MIT License）が解析・公開した定数データ。
+  署名アルゴリズム自体のコードは本プロジェクトの独立実装です
 - Apple の公開ドキュメント（Property List, X.509, HTTP, OTA インストール）
 
 本プロジェクトは Apple Inc. と提携・関連していません。

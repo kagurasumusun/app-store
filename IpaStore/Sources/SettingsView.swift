@@ -266,6 +266,18 @@ struct AcknowledgementsView: View {
 
                     Divider()
 
+                    Text("SAP protocol constant tables")
+                        .font(.headline)
+                    Text("""
+                    MIT License — Copyright (c) 2025 Lakr233 (ApplePackage project).
+
+                    The SAP v200 signer is an independent implementation written for this app; its interoperability constant tables (fixed substitution and routing data, no executable code) were reverse-engineered and published by the ApplePackage project under the MIT License. The full license text ships in ThirdParty/sap-tables/LICENSE in the source repository.
+                    """)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                    Divider()
+
                     Text("Protocol notes")
                         .font(.headline)
                     Text("""
