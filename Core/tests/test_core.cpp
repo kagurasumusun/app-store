@@ -24,6 +24,7 @@
 #include "ipashelf/ota.hpp"
 #include "ipashelf/plist.hpp"
 #include "ipashelf/sap.hpp"
+#include "ipashelf/sap_software.hpp"
 #include "ipashelf/store_client.hpp"
 #include "ipashelf/url.hpp"
 #include "ipashelf/x509.hpp"
@@ -137,6 +138,8 @@ class FakeSapBackend final : public ipashelf::SapBackend {
   ipashelf::Result<std::uint64_t> initialize(
       const ipashelf::Bytes& hardware_block) override {
     initialized_with = hardware_block;
+    // A new context restarts the two-exchange handshake state machine.
+    exchange_calls = 0;
     return std::uint64_t{0x51};
   }
 
@@ -188,6 +191,9 @@ class FakeSapBackend final : public ipashelf::SapBackend {
 // ---------------------------------------------------------------------------
 
 ipashelf::PlistValue make_bag() {
+  // Mirrors the shape of a current production bag: the
+  // volumeStoreDownloadProduct key holds the ent/download URL and the SAP
+  // version is a string.
   ipashelf::PlistValue bag = ipashelf::PlistValue::dictionary();
   bag.set("authenticateAccount",
           ipashelf::PlistValue::string(
@@ -195,8 +201,8 @@ ipashelf::PlistValue make_bag() {
               "authenticate/"));
   bag.set("volumeStoreDownloadProduct",
           ipashelf::PlistValue::string(
-              "https://p25-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/"
-              "volumeStoreDownloadProduct"));
+              "https://downloaddispatch.itunes.apple.com/WebObjects/"
+              "DownloadDispatch.woa/wa/ent/download"));
   bag.set("redownloadProduct",
           ipashelf::PlistValue::string(
               "https://downloaddispatch.itunes.apple.com/r/redownload"));
@@ -205,13 +211,11 @@ ipashelf::PlistValue make_bag() {
               "https://downloaddispatch.itunes.apple.com/up/updateProduct"));
   bag.set("sign-sap-setup",
           ipashelf::PlistValue::string(
-              "https://p25-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/"
-              "signSapSetup"));
+              "https://fpinit.itunes.apple.com/v1/signSapSetup/legacy"));
   bag.set("sign-sap-setup-cert",
           ipashelf::PlistValue::string(
-              "https://p25-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/"
-              "signSapSetupCert"));
-  bag.set("sign-sap-version", ipashelf::PlistValue::integer(200));
+              "https://s.mzstatic.com/sap/setupCert.plist"));
+  bag.set("sign-sap-version", ipashelf::PlistValue::string("200"));
   return bag;
 }
 
@@ -243,7 +247,7 @@ ipashelf::PlistValue make_auth_reply() {
   return reply;
 }
 
-ipashelf::PlistValue make_download_reply() {
+ipashelf::PlistValue make_download_reply(std::int64_t item_id = 0) {
   ipashelf::PlistValue sinf = ipashelf::PlistValue::dictionary();
   sinf.set("id", ipashelf::PlistValue::integer(1));
   sinf.set("sinf", ipashelf::PlistValue::data(bytes_of("sinf-bytes")));
@@ -251,6 +255,9 @@ ipashelf::PlistValue make_download_reply() {
   sinfs.append(std::move(sinf));
 
   ipashelf::PlistValue metadata = ipashelf::PlistValue::dictionary();
+  if (item_id != 0) {
+    metadata.set("itemId", ipashelf::PlistValue::integer(item_id));
+  }
   metadata.set("bundleShortVersionString",
                ipashelf::PlistValue::string("3.1.4"));
   metadata.set("softwareVersionExternalIdentifier",
@@ -524,6 +531,15 @@ void test_bag() {
   expect_eq(bag.value().sap_version, 200, "bag SAP version");
   expect(bag.value().auth_endpoint.find("authenticate") != std::string::npos,
          "bag auth endpoint");
+  // The volumeStoreDownloadProduct key carries the ent/download URL in
+  // current bags; the legacy volume store URL is rebuilt from the pod.
+  expect_eq(bag.value().ent_download_endpoint,
+            std::string("https://downloaddispatch.itunes.apple.com/"
+                        "WebObjects/DownloadDispatch.woa/wa/ent/download"),
+            "bag ent/download endpoint");
+  expect(bag.value().validate().ok(), "production-shaped bag validates");
+  expect(bag.value().validate_for_authentication().ok(),
+         "bag is usable for sign-in");
 
   auto normalised = normalize_auth_endpoint(
       "https://buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/authenticate");
@@ -531,17 +547,58 @@ void test_bag() {
   if (normalised) {
     expect(normalised.value().back() == '/', "auth endpoint gains slash");
   }
+  auto with_query = normalize_auth_endpoint(
+      "https://p7-buy.itunes.apple.com:443/WebObjects/MZFinance.woa/wa/"
+      "authenticate?Pod=7&PRH=7");
+  expect(with_query.has_value(), "pod auth endpoint normalises");
+  if (with_query) {
+    expect(with_query.value().find("authenticate/?Pod=7&PRH=7") !=
+               std::string::npos,
+           "normalisation retains host port and query");
+  }
+  expect(!normalize_auth_endpoint(
+              "https://buy.itunes.apple.com:8443/WebObjects/MZFinance.woa/"
+              "wa/authenticate"),
+         "non-default port rejected");
+  expect(!normalize_auth_endpoint(
+              "https://buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/"
+              "authenticate//"),
+         "double slash rejected");
+  expect(!normalize_auth_endpoint(
+              "https://buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/"
+              "authenticate%2f"),
+         "encoded path rejected");
+  expect(!normalize_auth_endpoint(
+              "https://user@buy.itunes.apple.com/WebObjects/MZFinance.woa/"
+              "wa/authenticate"),
+         "userinfo rejected");
 
+  // Parsing itself is deliberately lenient (download paths fetch the bag
+  // without authentication requirements); validation happens at use sites.
   PlistValue hostile = make_bag();
   hostile.set("authenticateAccount",
               PlistValue::string("https://evil.example.com/auth"));
   auto rejected = Bag::parse(hostile);
-  expect(!rejected.has_value(), "foreign auth host rejected");
+  expect(rejected.has_value(), "bag parse does not validate endpoints");
+  if (rejected) {
+    expect(!rejected.value().validate().ok(), "foreign auth host rejected");
+    expect(!rejected.value().validate_for_authentication().ok(),
+           "foreign auth host rejected for sign-in");
+  }
 
   PlistValue unsafe = make_bag();
   unsafe.set("redownloadProduct",
              PlistValue::string("https://downloaddispatch.itunes.apple.com/r/redownload?x=1"));
-  expect(!Bag::parse(unsafe).has_value(), "redownload with query rejected");
+  auto unsafe_bag = Bag::parse(unsafe);
+  expect(unsafe_bag.has_value() && !unsafe_bag.value().validate().ok(),
+         "redownload with query rejected");
+
+  PlistValue no_sap = make_bag();
+  no_sap.set("sign-sap-version", PlistValue::string("199"));
+  auto old_sap = Bag::parse(no_sap);
+  expect(old_sap.has_value() &&
+             !old_sap.value().validate_for_authentication().ok(),
+         "unsupported SAP version rejected for sign-in");
 }
 
 void test_login_success() {
@@ -595,13 +652,25 @@ void test_login_success() {
   const auto& login_request = fixture.transport.requests[3];
   expect(login_request.headers.contains("X-Apple-ActionSignature"),
          "login request is signed");
-  const std::string body = text_of(login_request.body);
-  expect(body.find("appleId=user%40example.com") != std::string::npos,
-         "login body apple id");
-  expect(body.find("password=secret123456") != std::string::npos,
-         "login body appends verification code");
-  expect(body.find("attempt=1") != std::string::npos, "login body attempt");
-  expect(body.find("why=signIn") != std::string::npos, "login body why");
+  // The wire body is an XML plist with string values, never form fields.
+  auto body_plist = PlistValue::parse(login_request.body);
+  expect(body_plist.has_value() && body_plist.value().is_dictionary(),
+         "login body is a plist");
+  if (body_plist) {
+    const PlistValue& fields = body_plist.value();
+    expect_eq(fields.string_or("appleId"), std::string("user@example.com"),
+              "login body apple id");
+    expect_eq(fields.string_or("password"), std::string("secret123456"),
+              "login body appends verification code");
+    expect_eq(fields.string_or("attempt"), std::string("1"),
+              "login body attempt is a string");
+    expect_eq(fields.string_or("why"), std::string("signIn"), "login why");
+    expect_eq(fields.string_or("rmp"), std::string("0"), "login rmp");
+    expect_eq(fields.string_or("guid"), fixture.hardware.guid(),
+              "login guid");
+  }
+  expect(text_of(login_request.body).find("appleId=") == std::string::npos,
+         "login body is not form-encoded");
   expect_eq(fixture.sap->sign_calls, 1, "SAP signed once");
   expect(!fixture.sap->initialized_with.empty(), "SAP received hardware block");
   expect_eq(fixture.sap->teardown_calls, 1, "SAP session torn down");
@@ -752,12 +821,14 @@ void test_download_offer() {
   account.directory_services_id = "1234567890";
   account.device_id = "A1B2C3D4E5F6";
   account.region = "us";
+  account.pod = "42";
 
   App app;
   app.id = 123456789;
   app.bundle_id = "com.example.sample";
 
-  transport.enqueue_plist(make_bag());
+  // Without a kbsync generator the volume store is tried first and no bag
+  // fetch is needed; the URL is rebuilt from the account pod.
   transport.enqueue_plist(make_download_reply());
 
   auto offer = client.download_offer(account, app, "9001", Platform::kIPhone,
@@ -775,9 +846,12 @@ void test_download_offer() {
     expect_eq(offer.value().external_version_id, std::string("9001"),
               "external version");
   }
-  expect(transport.requests.size() >= 2, "bag then download");
-  if (transport.requests.size() >= 2) {
-    const auto& download = transport.requests[1];
+  expect_eq(transport.requests.size(), std::size_t{1},
+            "download goes straight to the volume store");
+  if (transport.requests.size() >= 1) {
+    const auto& download = transport.requests[0];
+    expect(download.url.find("p42-buy.itunes.apple.com") != std::string::npos,
+           "volume store URL uses the account pod");
     expect_eq(download.method, std::string("POST"), "download is a POST");
     expect(download.url.find("volumeStoreDownloadProduct?guid=") !=
                std::string::npos,
@@ -810,8 +884,9 @@ void test_download_fallback() {
   PlistValue empty = PlistValue::dictionary();
   empty.set("songList", PlistValue::array());
 
-  transport.enqueue_plist(make_bag());
+  // Volume store (empty) -> bag fetch -> redownload.
   transport.enqueue_plist(empty);
+  transport.enqueue_plist(make_bag());
   transport.enqueue_plist(make_download_reply());
 
   auto offer = client.download_offer(account, app, "9001", Platform::kIPhone,
@@ -913,14 +988,19 @@ void test_version_identifiers() {
   app.id = 7;
   app.bundle_id = "com.example.sample";
 
-  transport.enqueue_plist(make_bag());
   transport.enqueue_plist(make_download_reply());
   auto versions =
-      client.version_identifiers(account, app, Platform::kIPhone, source.token());
-  expect(versions.has_value(), "version identifiers resolve");
+      client.version_list(account, app, Platform::kIPhone, source.token());
+  expect(versions.has_value(), "version list resolves");
   if (versions) {
-    expect(versions.value().size() == 2, "two versions");
-    expect_eq(versions.value().front(), std::string("9001"), "latest first");
+    expect_eq(versions.value().identifiers.size(), std::size_t{2},
+              "two versions");
+    expect_eq(versions.value().identifiers.front(), std::string("9001"),
+              "server order preserved");
+    expect_eq(versions.value().identifiers.back(), std::string("8800"),
+              "older version listed");
+    expect_eq(versions.value().latest, std::string("9001"),
+              "latest identifier reported separately");
   }
 }
 
@@ -942,6 +1022,545 @@ void test_download_parsing() {
     expect(missing.error().code == ErrorCode::kLicenseRequired,
            "license failure code");
   }
+}
+
+void test_phone_storefront() {
+  using namespace ipashelf;
+  expect_eq(phone_storefront_header("+8613800000000"), std::string("143465"),
+            "international China mobile");
+  expect_eq(phone_storefront_header("13800000000"), std::string("143465"),
+            "national China mobile");
+  expect_eq(phone_storefront_header("+86 138-0000-0000"),
+            std::string("143465"), "formatted China mobile");
+  expect_eq(phone_storefront_header("+919876543210"), std::string("143467"),
+            "international India mobile");
+  expect_eq(phone_storefront_header("919876543210"), std::string("143467"),
+            "India mobile with country code");
+  expect_eq(phone_storefront_header("09876543210"), std::string("143467"),
+            "India mobile with trunk prefix");
+  expect_eq(phone_storefront_header("9123456789"), std::string("143467"),
+            "local India number starting with 91");
+  expect_eq(phone_storefront_header("user@example.com"), std::string{},
+            "email has no phone storefront");
+  expect_eq(phone_storefront_header("+14155552671"), std::string{},
+            "unsupported international number");
+  expect_eq(phone_storefront_header("+442071234567"), std::string{},
+            "unsupported country code does not fall back to local rules");
+}
+
+void test_login_phone_storefront_header() {
+  using namespace ipashelf;
+  LoginFixture fixture;
+  HttpHeaders headers;
+  headers.set("X-Set-Apple-Store-Front", "143465-2,29");
+  fixture.transport.enqueue_plist(make_auth_reply(), 200, headers);
+
+  LoginRequest request;
+  request.email = "+8613800000000";
+  request.password = "secret";
+  request.hardware = fixture.hardware;
+  CancellationSource source;
+  auto result = fixture.client->login(request, source.token());
+  expect(result.has_value(), "phone-number sign-in succeeds");
+  expect_eq(fixture.transport.requests.size(), std::size_t{4},
+            "four requests issued");
+  if (fixture.transport.requests.size() == 4) {
+    expect_eq(fixture.transport.requests[3].headers.get_or(
+                  "X-Apple-Store-Front"),
+              std::string("143465"), "phone storefront routing hint sent");
+  }
+}
+
+void test_login_redirects() {
+  using namespace ipashelf;
+  {
+    LoginFixture fixture;
+    HttpHeaders headers;
+    headers.set("Location", "https://evil.example.com/authenticate");
+    fixture.transport.enqueue_response(302, "", headers);
+    LoginRequest request;
+    request.email = "user@example.com";
+    request.password = "secret";
+    request.hardware = fixture.hardware;
+    CancellationSource source;
+    auto result = fixture.client->login(request, source.token());
+    expect(!result.has_value(), "foreign redirect destination rejected");
+  }
+  {
+    LoginFixture fixture;
+    HttpHeaders headers;
+    headers.set("Location",
+                "https://buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/"
+                "authenticate");
+    fixture.transport.enqueue_response(303, "", headers);
+    LoginRequest request;
+    request.email = "user@example.com";
+    request.password = "secret";
+    request.hardware = fixture.hardware;
+    CancellationSource source;
+    auto result = fixture.client->login(request, source.token());
+    expect(!result.has_value(), "303 is not an authentication redirect");
+  }
+  {
+    LoginFixture fixture;
+    HttpHeaders redirect;
+    redirect.set("Location",
+                 "https://p9-buy.itunes.apple.com/WebObjects/MZFinance.woa/"
+                 "wa/authenticate");
+    fixture.transport.enqueue_response(302, "", redirect);
+    HttpHeaders headers;
+    headers.set("X-Set-Apple-Store-Front", "143441-1,29");
+    fixture.transport.enqueue_plist(make_auth_reply(), 200, headers);
+    LoginRequest request;
+    request.email = "user@example.com";
+    request.password = "secret";
+    request.hardware = fixture.hardware;
+    CancellationSource source;
+    auto result = fixture.client->login(request, source.token());
+    expect(result.has_value(), "pod redirect is followed");
+    expect_eq(fixture.sap->sign_calls, 2,
+              "redirected request is signed again");
+    if (fixture.transport.requests.size() == 5) {
+      expect(fixture.transport.requests[4].url.find("p9-buy") !=
+                 std::string::npos,
+             "second attempt went to the pod");
+    }
+  }
+}
+
+void test_ent_download() {
+  using namespace ipashelf;
+  FakeTransport transport;
+  StoreConfiguration configuration;
+  configuration.sleep = [](std::chrono::milliseconds) {};
+  int generator_calls = 0;
+  configuration.kbsync_generator =
+      [&generator_calls](const Bytes& hardware_id, std::uint64_t dsid)
+      -> Result<Bytes> {
+    ++generator_calls;
+    expect_eq(hardware_id.size(), std::size_t{6}, "kbsync hardware id size");
+    expect_eq(dsid, std::uint64_t{1234567890}, "kbsync dsid");
+    return Bytes{1, 2, 3};
+  };
+  std::optional<std::string> stored_entry;
+  configuration.kbsync_cache_load = [&stored_entry]() { return stored_entry; };
+  configuration.kbsync_cache_store = [&stored_entry](std::string_view entry) {
+    stored_entry = std::string(entry);
+  };
+  bool cache_removed = false;
+  configuration.kbsync_cache_remove = [&cache_removed]() {
+    cache_removed = true;
+  };
+  StoreClient client(transport, configuration);
+  CancellationSource source;
+
+  Account account;
+  account.directory_services_id = "1234567890";
+  account.password_token = "password-token";
+  account.storefront = "143441-1,29";
+  account.device_id = "A1B2C3D4E5F6";
+  account.region = "us";
+
+  App app;
+  app.id = 123456789;
+  app.bundle_id = "com.example.sample";
+
+  transport.enqueue_plist(make_bag());
+  transport.enqueue_plist(make_download_reply(123456789));
+  auto offer = client.download_offer(account, app, "9001", Platform::kIPhone,
+                                     source.token());
+  expect(offer.has_value(), "ent/download offer succeeds");
+  expect_eq(transport.requests.size(), std::size_t{2}, "bag then ent/download");
+  if (transport.requests.size() == 2) {
+    const auto& request = transport.requests[1];
+    expect(request.url.find("ent/download?guid=A1B2C3D4E5F6") !=
+               std::string::npos,
+           "ent/download URL");
+    expect_eq(request.headers.get_or("X-Token"),
+              std::string("password-token"), "ent token header");
+    expect(!request.follow_redirects,
+           "ent/download must not forward X-Token on redirects");
+    auto body = PlistValue::parse(request.body);
+    expect(body.has_value(), "ent body is a plist");
+    if (body) {
+      expect_eq(body.value().string_or("kbsync"), std::string("AQID"),
+                "kbsync blob is base64 in the payload");
+      expect_eq(body.value().string_or("salableAdamId"),
+                std::string("123456789"), "ent app id is a string");
+      const Bytes serial = {0x54, 0xc8, 0xb0, 0xa9, 0x88,
+                            0xc3, 0xd4, 0xe5, 0xf6};
+      expect_eq(body.value().string_or("serialNumber"), base64_encode(serial),
+                "ent serial number derivation");
+      expect_eq(body.value().string_or("externalVersionId"),
+                std::string("9001"), "ent version pin");
+    }
+  }
+  expect(stored_entry.has_value(), "validated kbsync blob is cached");
+  expect(!cache_removed, "cache entry retained");
+
+  // A second download reuses the cached blob without regenerating it.
+  transport.enqueue_plist(make_bag());
+  transport.enqueue_plist(make_download_reply(123456789));
+  auto second = client.download_offer(account, app, "9001", Platform::kIPhone,
+                                        source.token());
+  expect(second.has_value(), "cached ent/download succeeds");
+  expect_eq(generator_calls, 1, "kbsync generated only once");
+}
+
+void test_ent_download_fallbacks() {
+  using namespace ipashelf;
+  Account account;
+  account.directory_services_id = "1234567890";
+  account.password_token = "password-token";
+  account.storefront = "143441-1,29";
+  account.device_id = "A1B2C3D4E5F6";
+  account.region = "us";
+  App app;
+  app.id = 123456789;
+  app.bundle_id = "com.example.sample";
+
+  {
+    // Structured ent/download failure falls back to the legacy chain and
+    // does not populate the cache.
+    FakeTransport transport;
+    StoreConfiguration configuration;
+    configuration.sleep = [](std::chrono::milliseconds) {};
+    configuration.kbsync_generator =
+        [](const Bytes&, std::uint64_t) -> Result<Bytes> {
+      return Bytes{7};
+    };
+    bool stored = false;
+    configuration.kbsync_cache_store = [&stored](std::string_view) {
+      stored = true;
+    };
+    StoreClient client(transport, configuration);
+    CancellationSource source;
+
+    PlistValue unavailable = PlistValue::dictionary();
+    unavailable.set("failureType", PlistValue::string("2059"));
+    transport.enqueue_plist(make_bag());
+    transport.enqueue_plist(unavailable);
+    transport.enqueue_plist(make_download_reply());
+    auto offer = client.download_offer(account, app, "9001",
+                                       Platform::kIPhone, source.token());
+    expect(offer.has_value(), "legacy chain serves after ent failure");
+    expect(!stored, "failed kbsync blob is not cached");
+    expect_eq(transport.requests.size(), std::size_t{3},
+              "bag, ent, then volume store");
+    if (transport.requests.size() == 3) {
+      expect(transport.requests[2].url.find("volumeStoreDownloadProduct") !=
+                 std::string::npos,
+             "fallback hits the volume store");
+    }
+  }
+
+  {
+    // A rejected cached blob is invalidated and regenerated exactly once.
+    FakeTransport transport;
+    StoreConfiguration configuration;
+    configuration.sleep = [](std::chrono::milliseconds) {};
+    int generator_calls = 0;
+    configuration.kbsync_generator =
+        [&generator_calls](const Bytes&, std::uint64_t) -> Result<Bytes> {
+      ++generator_calls;
+      return Bytes{9, 9};
+    };
+    std::optional<std::string> stored_entry =
+        std::string("{\"dsid\":1234567890,\"guid\":\"A1B2C3D4E5F6\","
+                    "\"data\":\"AQID\"}");
+    bool removed = false;
+    configuration.kbsync_cache_load = [&stored_entry]() {
+      return stored_entry;
+    };
+    configuration.kbsync_cache_store =
+        [&stored_entry](std::string_view entry) {
+          stored_entry = std::string(entry);
+        };
+    configuration.kbsync_cache_remove = [&]() { removed = true; };
+    StoreClient client(transport, configuration);
+    CancellationSource source;
+
+    transport.enqueue_plist(make_bag());
+    transport.enqueue_response(500, "");
+    transport.enqueue_plist(make_download_reply(123456789));
+    auto offer = client.download_offer(account, app, "9001",
+                                       Platform::kIPhone, source.token());
+    expect(offer.has_value(), "fresh kbsync blob succeeds after rejection");
+    expect(removed, "rejected cached entry removed");
+    expect_eq(generator_calls, 1, "one regeneration");
+    expect(stored_entry.has_value() &&
+               stored_entry->find("CQk=") != std::string::npos,
+           "fresh blob cached");
+  }
+}
+
+ipashelf::Bytes t_dmap(std::string_view name, const ipashelf::Bytes& payload) {
+  ipashelf::Bytes out(name.begin(), name.end());
+  const std::uint32_t size = static_cast<std::uint32_t>(payload.size());
+  out.push_back(static_cast<std::uint8_t>((size >> 24) & 0xff));
+  out.push_back(static_cast<std::uint8_t>((size >> 16) & 0xff));
+  out.push_back(static_cast<std::uint8_t>((size >> 8) & 0xff));
+  out.push_back(static_cast<std::uint8_t>(size & 0xff));
+  out.insert(out.end(), payload.begin(), payload.end());
+  return out;
+}
+
+ipashelf::Bytes t_dmap_u32(std::string_view name, std::uint32_t value) {
+  ipashelf::Bytes payload = {
+      static_cast<std::uint8_t>((value >> 24) & 0xff),
+      static_cast<std::uint8_t>((value >> 16) & 0xff),
+      static_cast<std::uint8_t>((value >> 8) & 0xff),
+      static_cast<std::uint8_t>(value & 0xff)};
+  return t_dmap(name, payload);
+}
+
+ipashelf::Bytes t_dmap_str(std::string_view name, std::string_view value) {
+  return t_dmap(name, ipashelf::Bytes(value.begin(), value.end()));
+}
+
+ipashelf::Bytes t_owned_item(std::uint32_t id, std::uint32_t media_kind,
+                             std::uint32_t products, std::string_view bundle,
+                             std::string_view name, std::string_view version,
+                             std::uint32_t purchase_date, bool use_minm) {
+  ipashelf::Bytes payload;
+  const auto add = [&](ipashelf::Bytes part) {
+    payload.insert(payload.end(), part.begin(), part.end());
+  };
+  add(t_dmap_u32("aeSI", id));
+  add(t_dmap_u32("aeMk", media_kind));
+  add(t_dmap_u32("aeSS", products));
+  add(t_dmap_str("aeBI", bundle));
+  add(t_dmap_str(use_minm ? "minm" : "aeLN", name));
+  add(t_dmap_str("aePd", version));
+  add(t_dmap_u32("asdp", purchase_date));
+  return t_dmap("mlit", payload);
+}
+
+void enqueue_owned_flow(FakeTransport& transport) {
+  using namespace ipashelf;
+  const auto respond = [&transport](Bytes body) {
+    transport.enqueue([body](const HttpRequest&) {
+      HttpResponse response;
+      response.status = 200;
+      response.body = body;
+      return Result<HttpResponse>(response);
+    });
+  };
+  Bytes login_payload;
+  const auto add = [](Bytes& into, Bytes part) {
+    into.insert(into.end(), part.begin(), part.end());
+  };
+  add(login_payload, t_dmap_u32("mstt", 200));
+  add(login_payload, t_dmap_u32("mlid", 4242));
+  Bytes update_payload;
+  add(update_payload, t_dmap_u32("mstt", 200));
+  add(update_payload, t_dmap_u32("musr", 7));
+
+  // Storefront ,34: a mobile app plus a Mac app discovered by media kind.
+  Bytes items_34_list;
+  add(items_34_list,
+      t_owned_item(111, 131072, 3, "com.example.one", "One", "1.0",
+                   1700000000, false));
+  add(items_34_list,
+      t_owned_item(222, 67108864, 0, "com.example.mac", "Mac App", "2.0",
+                   1690000000, true));
+  // Storefront ,13: the same mobile app with Mac availability and a newer
+  // purchase date, plus a visionOS app.
+  Bytes items_13_list;
+  add(items_13_list,
+      t_owned_item(111, 131072, 9, "com.example.one", "One", "1.0",
+                   1700001000, false));
+  add(items_13_list,
+      t_owned_item(333, 262144, 16, "com.example.vision", "Vision", "3.0",
+                   1710000000, false));
+
+  respond(t_dmap("mlog", login_payload));
+  respond(t_dmap("mupd", update_payload));
+  respond(t_dmap("avdb", t_dmap("mlcl", items_34_list)));
+  respond(t_dmap("mlog", login_payload));
+  respond(t_dmap("mupd", update_payload));
+  respond(t_dmap("avdb", t_dmap("mlcl", items_13_list)));
+}
+
+void test_owned_apps() {
+  using namespace ipashelf;
+  FakeTransport transport;
+  auto sap = std::make_shared<FakeSapBackend>();
+  StoreConfiguration configuration;
+  configuration.sleep = [](std::chrono::milliseconds) {};
+  configuration.sap_backend_factory = [sap]() {
+    return Result<std::shared_ptr<SapBackend>>(sap);
+  };
+  configuration.now_unix = []() { return std::int64_t{1700000000}; };
+  configuration.time_zone_name = "Asia/Tokyo";
+  configuration.utc_offset_seconds = 32400;
+  StoreClient client(transport, configuration);
+  CancellationSource source;
+
+  const HardwareIdentity hardware = HardwareIdentity::random();
+  Account account;
+  account.email = "user@example.com";
+  account.password_token = "password-token";
+  account.directory_services_id = "1234567890";
+  account.storefront = "143441-1,29";
+  account.device_id = hardware.guid();
+
+  transport.enqueue_plist(make_bag());
+  transport.enqueue_plist(make_certificate());
+  transport.enqueue_plist(make_setup_reply());
+  enqueue_owned_flow(transport);
+
+  auto page = client.owned_apps(account, std::nullopt, 2, 2, source.token());
+  expect(page.has_value(), "owned apps resolve");
+  if (!page) {
+    std::cerr << "  owned apps error: " << page.error().message << "\n";
+    return;
+  }
+  expect_eq(page.value().total, 3, "merged total across storefronts");
+  // Sorted by purchase date descending: 333, 111, 222 -> page 2 holds 222.
+  expect_eq(page.value().apps.size(), std::size_t{1}, "second page size");
+  if (page.value().apps.size() == 1) {
+    const App& mac = page.value().apps[0];
+    expect_eq(mac.id, std::int64_t{222}, "oldest purchase last");
+    expect_eq(mac.name, std::string("Mac App"), "minm name fallback");
+    expect(std::find(mac.platforms.begin(), mac.platforms.end(),
+                     Platform::kMacOS) != mac.platforms.end(),
+           "media kind marks the Mac app");
+  }
+
+  expect_eq(transport.requests.size(), std::size_t{9},
+            "bag + SAP setup + two DAAP flows");
+  if (transport.requests.size() == 9) {
+    const auto& login = transport.requests[3];
+    expect(login.url.ends_with("/login"), "DAAP login URL");
+    expect(!login.headers.contains("X-Apple-ActionSignature"),
+           "DAAP login is unsigned");
+    expect_eq(login.headers.get_or("X-Apple-Store-Front"),
+              std::string("143441-1,34"), "first storefront suffix");
+    expect_eq(login.headers.get_or("X-Apple-TZ"), std::string("540"),
+              "timezone offset minutes");
+    expect(login.headers.get_or("Date").find("GMT") != std::string::npos,
+           "DAAP date header");
+    const auto& update = transport.requests[4];
+    expect(update.headers.contains("X-Apple-ActionSignature"),
+           "DAAP update is SAP-signed");
+    expect_eq(text_of(update.body),
+              std::string("session-id=4242&revision-number=(null)&query="
+                          "('com.apple.itunes.extended\\-media\\-kind:131072'"
+                          ",'com.apple.itunes.extended\\-media\\-kind:262144'"
+                          ",'com.apple.itunes.extended\\-media\\-kind:"
+                          "67108864')"),
+              "DAAP update body");
+    const auto& items = transport.requests[5];
+    expect(items.url.find("/databases/7/items") != std::string::npos,
+           "DAAP items URL carries the revision");
+    expect(items.headers.contains("X-Apple-ActionSignature"),
+           "DAAP items are SAP-signed");
+    expect_eq(transport.requests[6].headers.get_or("X-Apple-Store-Front"),
+              std::string("143441-1,13"), "second storefront suffix");
+  }
+  expect_eq(sap->sign_calls, 4, "two signed DAAP calls per storefront");
+  expect_eq(sap->teardown_calls, 1, "SAP session torn down");
+
+  // Platform filtering happens after the merge.
+  transport.enqueue_plist(make_bag());
+  transport.enqueue_plist(make_certificate());
+  transport.enqueue_plist(make_setup_reply());
+  enqueue_owned_flow(transport);
+  auto mac_page =
+      client.owned_apps(account, Platform::kMacOS, 1, 10, source.token());
+  expect(mac_page.has_value(), "filtered owned apps resolve");
+  if (!mac_page) {
+    std::cerr << "  filtered owned apps error: " << mac_page.error().message
+              << "\n";
+  }
+  if (mac_page) {
+    expect_eq(mac_page.value().total, 2, "Mac-filtered total");
+    bool merged_platforms = false;
+    std::int64_t merged_date = 0;
+    for (const App& app : mac_page.value().apps) {
+      if (app.id == 111) {
+        merged_platforms =
+            app.platforms.size() == 3 &&
+            std::find(app.platforms.begin(), app.platforms.end(),
+                      Platform::kIPhone) != app.platforms.end() &&
+            std::find(app.platforms.begin(), app.platforms.end(),
+                      Platform::kIPad) != app.platforms.end() &&
+            std::find(app.platforms.begin(), app.platforms.end(),
+                      Platform::kMacOS) != app.platforms.end();
+        merged_date = app.purchase_date_unix;
+      }
+    }
+    expect(merged_platforms, "platforms merged across storefronts");
+    expect_eq(merged_date, std::int64_t{1700001000},
+              "newest purchase date wins the merge");
+  }
+
+  auto invalid =
+      client.owned_apps(account, Platform::kWatchOS, 1, 10, source.token());
+  expect(!invalid.has_value(), "watchOS purchase-history filter rejected");
+  auto too_big =
+      client.owned_apps(account, std::nullopt, 1, 101, source.token());
+  expect(!too_big.has_value(), "limit above the DAAP maximum rejected");
+}
+
+void test_version_metadata(const std::string& fixtures) {
+  using namespace ipashelf;
+  const Bytes package = read_file(fixtures + "/sample.ipa");
+  expect(!package.empty(), "sample IPA fixture present");
+  if (package.empty()) return;
+
+  FakeTransport transport;
+  StoreConfiguration configuration;
+  configuration.sleep = [](std::chrono::milliseconds) {};
+  StoreClient client(transport, configuration);
+  CancellationSource source;
+
+  Account account;
+  account.directory_services_id = "1";
+  account.device_id = "AABBCCDDEEFF";
+  account.region = "us";
+  App app;
+  app.id = 7;
+  app.bundle_id = "com.example.sample";
+
+  transport.enqueue_plist(make_download_reply());
+  for (int index = 0; index < 8; ++index) {
+    transport.enqueue([package](const HttpRequest& request) {
+      HttpResponse response;
+      response.status = 206;
+      const std::uint64_t begin = request.range_start.value_or(0);
+      const std::uint64_t end =
+          request.range_end.value_or(package.size() - 1);
+      response.body.assign(package.begin() + static_cast<std::ptrdiff_t>(begin),
+                           package.begin() +
+                               static_cast<std::ptrdiff_t>(end + 1));
+      response.headers.set("Content-Range",
+                           "bytes " + std::to_string(begin) + "-" +
+                               std::to_string(end) + "/" +
+                               std::to_string(package.size()));
+      return Result<HttpResponse>(response);
+    });
+  }
+
+  auto metadata =
+      client.version_metadata(account, app, "9001", Platform::kIPhone,
+                              source.token());
+  expect(metadata.has_value(), "version metadata resolves from the package");
+  if (!metadata) {
+    std::cerr << "  version metadata error: " << metadata.error().message
+              << "\n";
+    return;
+  }
+  expect_eq(metadata.value().display_version, std::string("3.1.4"),
+            "display version from Info.plist");
+  expect(metadata.value().release_date_unix > 1700000000,
+         "release date falls back to the zip entry time");
+  bool used_ranges = false;
+  for (const auto& request : transport.requests) {
+    if (request.range_start.has_value()) used_ranges = true;
+  }
+  expect(used_ranges, "partial zip uses range requests");
 }
 
 void test_account_json() {
@@ -1000,38 +1619,92 @@ void test_ipa_patch(const std::string& fixtures) {
   expect_eq(default_sinf_path(info.value()),
             std::string("Payload/Sample.app/SC_Info/Sample.sinf"),
             "default sinf path");
+  expect(info.value().declares_supported_platforms,
+         "platform declaration present");
+  expect_eq(info.value().sinf_paths.size(), std::size_t{2},
+            "manifest sinf paths");
+  if (info.value().sinf_paths.size() == 2) {
+    expect_eq(info.value().sinf_paths[0],
+              std::string("Payload/Sample.app/SC_Info/Sample.sinf"),
+              "first manifest sinf path is bundle-relative resolved");
+    expect_eq(info.value().sinf_paths[1],
+              std::string("Payload/Sample.app/Frameworks/Kit.framework/"
+                          "SC_Info/Kit.sinf"),
+              "framework sinf path");
+  }
 
-  App app;
-  app.id = 123456789;
-  app.bundle_id = "com.example.sample";
-  app.name = "Sample";
+  // Platform validation mirrors the reference rules: declared support is
+  // required, except that a missing declaration is tolerated for iPhoneOS.
+  expect(validate_ipa_platform(info.value(), Platform::kIPhone).ok(),
+         "iPhoneOS package validates for iPhone");
+  expect(validate_ipa_platform(info.value(), Platform::kIPad).ok(),
+         "iPhoneOS package validates for iPad");
+  expect(!validate_ipa_platform(info.value(), Platform::kAppleTV).ok(),
+         "iPhoneOS package rejected for Apple TV");
+  expect(validate_ipa_platform(info.value(), Platform::kMacOS).ok(),
+         "macOS requests are not platform-checked");
+  expect(validate_ipa_platform(info.value(), Platform::kUnspecified).ok(),
+         "unspecified requests are not platform-checked");
+  IpaInfo legacy;
+  legacy.declares_supported_platforms = false;
+  expect(validate_ipa_platform(legacy, Platform::kIPhone).ok(),
+         "missing declaration tolerated for iPhoneOS");
+  expect(!validate_ipa_platform(legacy, Platform::kVisionOS).ok(),
+         "missing declaration rejected for visionOS");
+  legacy.declares_supported_platforms = true;
+  expect(!validate_ipa_platform(legacy, Platform::kIPhone).ok(),
+         "empty declaration rejected for iPhoneOS");
 
   DownloadOffer offer;
   offer.bundle_id = "com.example.sample";
   offer.display_version = "3.1.4";
   offer.external_version_id = "9001";
-  PlistValue metadata = build_itunes_metadata(app, offer, [] {
-    Account account;
-    account.email = "user@example.com";
-    return account;
-  }(), default_sinf_path(info.value()));
+  PlistValue server_metadata = PlistValue::dictionary();
+  server_metadata.set("itemId", PlistValue::integer(123456789));
+  server_metadata.set("softwareVersionBundleId",
+                      PlistValue::string("com.example.sample"));
+  offer.metadata = server_metadata;
+  Account account;
+  account.email = "user@example.com";
+  PlistValue metadata = build_itunes_metadata(offer, account);
   expect_eq(metadata.string_or("apple-id"), std::string("user@example.com"),
             "metadata apple id");
   expect_eq(metadata.string_or("userName"), std::string("user@example.com"),
             "metadata user name");
   expect_eq(metadata.integer_for("itemId").value_or(0), 123456789,
-            "metadata item id");
-  const PlistValue* paths = metadata.find("SinfPaths");
-  expect(paths != nullptr && paths->is_array() && paths->array_items().size() == 1,
-         "metadata sinf paths");
+            "server metadata preserved");
+
+  // Sinf blobs pair one-for-one with the manifest paths.
+  std::vector<Sinf> sinfs;
+  sinfs.push_back(Sinf{0, bytes_of("patched-sinf-1")});
+  sinfs.push_back(Sinf{1, bytes_of("patched-sinf-2")});
+  auto sinf_entries = resolve_sinf_entries(info.value(), sinfs);
+  expect(sinf_entries.has_value(), "sinf entries resolve");
+  if (!sinf_entries) return;
+  expect_eq(sinf_entries.value().size(), std::size_t{2}, "two sinf entries");
+  std::vector<Sinf> short_sinfs;
+  short_sinfs.push_back(Sinf{0, bytes_of("only-one")});
+  expect(!resolve_sinf_entries(info.value(), short_sinfs).has_value(),
+         "sinf count mismatch with manifest rejected");
+  IpaInfo no_manifest = info.value();
+  no_manifest.sinf_paths.clear();
+  auto fallback_entries = resolve_sinf_entries(no_manifest, sinfs);
+  expect(fallback_entries.has_value(), "fallback sinf entry resolves");
+  if (fallback_entries) {
+    expect_eq(fallback_entries.value().size(), std::size_t{1},
+              "fallback uses a single sinf");
+    expect_eq(fallback_entries.value().front().first,
+              default_sinf_path(info.value()), "fallback sinf path");
+  }
 
   IpaPatchOptions options;
   options.source_path = source;
   options.destination_path = fixtures + "/patched.ipa";
   options.metadata = metadata;
   options.artwork = bytes_of("PNG-ARTWORK");
-  options.sinf = bytes_of("patched-sinf");
-  options.sinf_path = default_sinf_path(info.value());
+  options.sinf_entries = sinf_entries.value();
+  const std::string first_sinf_path = options.sinf_entries[0].first;
+  const std::string second_sinf_path = options.sinf_entries[1].first;
 
   CancellationSource source_token;
   const Status status = write_patched_ipa(options, source_token.token());
@@ -1075,7 +1748,12 @@ void test_ipa_patch(const std::string& fixtures) {
 
   const int metadata_index = find_entry("iTunesMetadata.plist");
   expect(metadata_index >= 0, "metadata entry exists");
-  auto written = PlistValue::parse(read_entry(metadata_index));
+  const Bytes metadata_bytes = read_entry(metadata_index);
+  expect(metadata_bytes.size() >= 8 &&
+             std::string(metadata_bytes.begin(), metadata_bytes.begin() + 8) ==
+                 "bplist00",
+         "metadata is written as a binary plist");
+  auto written = PlistValue::parse(metadata_bytes);
   expect(written.has_value(), "written metadata parses");
   if (written) {
     expect_eq(written.value().string_or("apple-id"),
@@ -1083,8 +1761,10 @@ void test_ipa_patch(const std::string& fixtures) {
   }
   expect_eq(text_of(read_entry(find_entry("iTunesArtwork"))),
             std::string("PNG-ARTWORK"), "artwork written");
-  expect_eq(text_of(read_entry(find_entry(options.sinf_path))),
-            std::string("patched-sinf"), "sinf replaced");
+  expect_eq(text_of(read_entry(find_entry(first_sinf_path))),
+            std::string("patched-sinf-1"), "first sinf replaced");
+  expect_eq(text_of(read_entry(find_entry(second_sinf_path))),
+            std::string("patched-sinf-2"), "framework sinf replaced");
   expect_eq(text_of(read_entry(find_entry("Payload/Sample.app/Sample"))),
             std::string("MACH-O-PAYLOAD"), "binary preserved");
   expect(find_entry("iTunesMetadata.plist") >= 0, "metadata at root");
@@ -1889,6 +2569,369 @@ void test_x509(const std::string& fixtures) {
          "missing signer rejected");
 }
 
+// ---------------------------------------------------------------------------
+// Software SAP (known-answer tests)
+//
+// The vectors below are synthetic inputs whose expected outputs are fixed by
+// the protocol algorithm; none of them was issued by a server. They pin the
+// SHA-1/HMAC/AES primitives, the cipher transform, the F2 derivation, and the
+// complete setup handshake byte for byte.
+// ---------------------------------------------------------------------------
+
+ipashelf::Bytes hex_bytes(std::string_view text) {
+  auto decoded = ipashelf::hex_decode(text);
+  if (!decoded) return {};
+  return decoded.value();
+}
+
+std::string hex_of(const ipashelf::Bytes& bytes) {
+  return ipashelf::hex_encode(bytes);
+}
+
+template <std::size_t Size>
+std::string hex_of(const std::array<std::uint8_t, Size>& bytes) {
+  return hex_of(ipashelf::Bytes(bytes.begin(), bytes.end()));
+}
+
+void test_crypto_primitives() {
+  expect_eq(ipashelf::sha1_hex("abc", 3),
+            std::string("a9993e364706816aba3e25717850c26c9cd0d89d"),
+            "SHA-1 of abc");
+  expect_eq(ipashelf::sha1_hex("", 0),
+            std::string("da39a3ee5e6b4b0d3255bfef95601890afd80709"),
+            "SHA-1 of empty input");
+  const std::string long_text(1000000, 'a');
+  expect_eq(ipashelf::sha1_hex(long_text.data(), long_text.size()),
+            std::string("34aa973cd4c4daa4f61eeb2bdbad27316534016f"),
+            "SHA-1 of one million a characters");
+
+  const ipashelf::Bytes hmac_key(20, 0x0b);
+  expect_eq(hex_of(ipashelf::hmac_sha1(hmac_key, "Hi There", 8)),
+            std::string("b617318655057264e28bc0b6fb378c8ef146be00"),
+            "HMAC-SHA1 RFC 2202 case 1");
+  expect_eq(hex_of(ipashelf::hmac_sha1(bytes_of("Jefe"),
+                                       "what do ya want for nothing?", 28)),
+            std::string("effcdf6ae5eb2fa2d27416d5f184df9c259a7c79"),
+            "HMAC-SHA1 RFC 2202 case 2");
+
+  const ipashelf::Bytes key = hex_bytes("000102030405060708090a0b0c0d0e0f");
+  const ipashelf::Bytes plain = hex_bytes("00112233445566778899aabbccddeeff");
+  std::array<std::uint8_t, 16> aes_key{};
+  std::copy(key.begin(), key.end(), aes_key.begin());
+  const ipashelf::Aes128 aes(aes_key);
+  std::uint8_t cipher_block[16];
+  aes.encrypt_block(plain.data(), cipher_block);
+  expect_eq(hex_of(ipashelf::Bytes(cipher_block, cipher_block + 16)),
+            std::string("69c4e0d86a7b0430d8cdb78070b4c55a"),
+            "AES-128 FIPS-197 encryption");
+  std::uint8_t round_trip[16];
+  aes.decrypt_block(cipher_block, round_trip);
+  expect_bytes(ipashelf::Bytes(round_trip, round_trip + 16), plain,
+               "AES-128 decryption inverts encryption");
+
+  const ipashelf::Bytes cbc_key = hex_bytes("2b7e151628aed2a6abf7158809cf4f3c");
+  const ipashelf::Bytes cbc_iv = hex_bytes("000102030405060708090a0b0c0d0e0f");
+  const ipashelf::Bytes cbc_plain =
+      hex_bytes("6bc1bee22e409f96e93d7e117393172a"
+                "ae2d8a571e03ac9c9eb76fac45af8e51");
+  std::array<std::uint8_t, 16> cbc_key_array{};
+  std::array<std::uint8_t, 16> cbc_iv_array{};
+  std::copy(cbc_key.begin(), cbc_key.end(), cbc_key_array.begin());
+  std::copy(cbc_iv.begin(), cbc_iv.end(), cbc_iv_array.begin());
+  auto cbc_encrypted =
+      ipashelf::aes128_cbc_encrypt(cbc_plain, cbc_key_array, cbc_iv_array);
+  expect(cbc_encrypted.has_value(), "AES-CBC encryption succeeds");
+  if (cbc_encrypted) {
+    expect_eq(hex_of(cbc_encrypted.value()),
+              std::string("7649abac8119b246cee98e9b12e9197d"
+                          "5086cb9b507219ee95db113a917678b2"),
+              "AES-CBC SP 800-38A vector");
+    auto cbc_decrypted = ipashelf::aes128_cbc_decrypt(
+        cbc_encrypted.value(), cbc_key_array, cbc_iv_array);
+    expect(cbc_decrypted.has_value(), "AES-CBC decryption succeeds");
+    if (cbc_decrypted) {
+      expect_bytes(cbc_decrypted.value(), cbc_plain,
+                   "AES-CBC decryption round trip");
+    }
+  }
+  expect(!ipashelf::aes128_cbc_encrypt(ipashelf::Bytes(3, 0), cbc_key_array,
+                                       cbc_iv_array),
+         "AES-CBC rejects unaligned input");
+
+  auto random = ipashelf::random_bytes(32);
+  expect(random.has_value() && random.value().size() == 32,
+         "OS random bytes are available");
+}
+
+struct XorShift32 {
+  std::uint32_t state;
+  std::uint32_t word() {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return state;
+  }
+  ipashelf::Bytes bytes(std::size_t count) {
+    ipashelf::Bytes output(count);
+    for (std::uint8_t& byte : output) {
+      byte = static_cast<std::uint8_t>(word() & 0xff);
+    }
+    return output;
+  }
+};
+
+ipashelf::SapSessionData synthetic_session() {
+  XorShift32 random{0x53595031};
+  ipashelf::SapSessionData session;
+  session.source = random.bytes(576);
+  session.source[0xfa] = static_cast<std::uint8_t>(session.source[0xca] ^ 10);
+  session.source[0xf3] =
+      static_cast<std::uint8_t>(session.source[0xc3] ^ 147);
+  const ipashelf::Bytes input1 = random.bytes(16);
+  const ipashelf::Bytes input2 = random.bytes(16);
+  std::copy(input1.begin(), input1.end(), session.f2_input1.begin());
+  std::copy(input2.begin(), input2.end(), session.f2_input2.begin());
+  session.f2_tail = random.bytes(7);
+  const std::string label = "SYNTHETIC TEST SESSION / NEVER SERVER-ISSUED / ";
+  session.f3 = bytes_of(label);
+  const ipashelf::Bytes rest = random.bytes(159 - label.size());
+  session.f3.insert(session.f3.end(), rest.begin(), rest.end());
+  for (std::uint32_t& word : session.random_words) word = random.word();
+  session.seed30 = random.word();
+  session.seed54 = random.word();
+  session.random_cursor = 624;
+  session.f1_material_address = 0x1234500044ULL;
+  session.iv_address = 0x0FEED00050ULL;
+  return session;
+}
+
+void test_sap_software_synthetic() {
+  const ipashelf::SapSessionData session = synthetic_session();
+  expect_eq(ipashelf::sha256_hex(session.source.data(), session.source.size()),
+            std::string("bc89fa33012fa9d8639c174bc5fca3b9e037da8b91a1d42b0c82"
+                        "992963fd315a"),
+            "synthetic session source hash");
+
+  auto head =
+      ipashelf::sap_software_f2_head(session.f2_input1, session.f2_input2);
+  expect(head.has_value(), "F2 derivation succeeds");
+  if (head) {
+    expect_eq(hex_of(head.value()),
+              std::string("ad1adda4bad5ada37fd54543681d001c"),
+              "F2 head known answer");
+  }
+
+  auto cipher = ipashelf::SapSoftwareCipher::create(session.source);
+  expect(cipher.has_value(), "SAP cipher preparation succeeds");
+  if (cipher) {
+    std::array<std::uint8_t, 16> zeros{};
+    std::array<std::uint8_t, 16> sequence{};
+    std::array<std::uint8_t, 16> ones{};
+    for (int index = 0; index < 16; ++index) {
+      sequence[index] = static_cast<std::uint8_t>(index);
+      ones[index] = 0xff;
+    }
+    expect_eq(hex_of(cipher.value()->encrypt(zeros)),
+              std::string("8fcdc9e6d7c5009c7f489288231582de"),
+              "E transform of the zero block");
+    expect_eq(hex_of(cipher.value()->encrypt(sequence)),
+              std::string("65810b6c7555809e4b87529110631a4c"),
+              "E transform of the sequence block");
+    expect_eq(hex_of(cipher.value()->encrypt(ones)),
+              std::string("73d2bd4f671e9abe8b105aac1883036d"),
+              "E transform of the 0xff block");
+  }
+
+  auto signer = ipashelf::SapSoftwareSigner::create(session, 7);
+  expect(signer.has_value(), "SAP signer creation succeeds");
+  if (!signer) return;
+  ipashelf::Bytes second_body = bytes_of("synthetic SAP\nbody-2");
+  second_body.push_back(0);
+  second_body.push_back(0xff);
+  ipashelf::Bytes third_body(256);
+  for (int index = 0; index < 256; ++index) {
+    third_body[index] = static_cast<std::uint8_t>(index);
+  }
+  const ipashelf::Bytes bodies[3] = {ipashelf::Bytes{}, second_body,
+                                     third_body};
+  const char* expected_hashes[3] = {
+      "ba76e674c73d9db75c2986233016b94b22e062556fd029d71733726519756517",
+      "4acc6269de932c753260fecfa375a6405b5b63cf621a8adace3bd7b5f0305287",
+      "853914149c9de004852fffa75a4489c3cdec3f179c92903e3d94b8b2d494e4e4"};
+  ipashelf::Bytes signatures[3];
+  for (int index = 0; index < 3; ++index) {
+    auto signature = signer.value()->sign(bodies[index]);
+    expect(signature.has_value(), "SAP signing succeeds");
+    if (!signature) return;
+    signatures[index] = signature.value();
+    expect_eq(signatures[index].size(), std::size_t{501},
+              "SAP signature length");
+    expect_eq(ipashelf::sha256_hex(signatures[index].data(),
+                                   signatures[index].size()),
+              std::string(expected_hashes[index]),
+              "SAP signature known answer");
+  }
+  expect(std::equal(signatures[0].end() - 464, signatures[0].end(),
+                    signatures[1].end() - 464),
+         "signing blob is cached across calls");
+  expect(!std::equal(signatures[0].begin() + 1, signatures[0].begin() + 17,
+                     signatures[1].begin() + 1),
+         "each signature consumes a fresh IV");
+
+  auto replay = ipashelf::SapSoftwareSigner::create(session, 7);
+  expect(replay.has_value(), "signer replay creation succeeds");
+  if (replay) {
+    auto again = replay.value()->sign(bodies[0]);
+    expect(again.has_value(), "signer replay succeeds");
+    if (again) {
+      expect_bytes(again.value(), signatures[0],
+                   "signing is deterministic for a fresh session copy");
+    }
+  }
+}
+
+void test_sap_software_handshake(const std::string& fixtures) {
+  const ipashelf::Bytes raw =
+      read_file(fixtures + "/sap_handshake_fixture.json");
+  expect(!raw.empty(), "SAP handshake fixture is present");
+  if (raw.empty()) return;
+  auto parsed = ipashelf::Json::parse(text_of(raw));
+  expect(parsed.has_value(), "SAP handshake fixture parses");
+  if (!parsed) return;
+  const ipashelf::Json& root = parsed.value();
+  const ipashelf::Json* certificate = root.find("certificate");
+  const ipashelf::Json* cases = root.find("cases");
+  expect(certificate != nullptr && certificate->is_string() &&
+             cases != nullptr && cases->is_array(),
+         "SAP handshake fixture shape");
+  if (certificate == nullptr || cases == nullptr) return;
+  const ipashelf::Bytes certificate_bytes =
+      hex_bytes(certificate->string_value());
+  expect_eq(certificate_bytes.size(), std::size_t{783},
+            "fixture certificate length");
+
+  const auto u32_field = [](const ipashelf::Json& object,
+                            std::string_view key) {
+    const ipashelf::Json* value = object.find(key);
+    if (value == nullptr) return std::uint32_t{0};
+    return static_cast<std::uint32_t>(value->int_value());
+  };
+  const auto hex_field = [](const ipashelf::Json& object,
+                            std::string_view key) {
+    const ipashelf::Json* value = object.find(key);
+    if (value == nullptr || !value->is_string()) return ipashelf::Bytes{};
+    return hex_bytes(value->string_value());
+  };
+
+  std::optional<std::size_t> first_case;
+  for (std::size_t index = 0; index < cases->array_items().size(); ++index) {
+    const ipashelf::Json& vector = cases->array_items()[index];
+    const ipashelf::Json* entropy = vector.find("entropy");
+    expect(entropy != nullptr && entropy->is_array() &&
+               entropy->array_items().size() == 3,
+           "fixture entropy shape");
+    if (entropy == nullptr || entropy->array_items().size() != 3) continue;
+    std::array<std::uint32_t, 3> entropy_words{};
+    for (int word = 0; word < 3; ++word) {
+      entropy_words[word] = static_cast<std::uint32_t>(
+          entropy->array_items()[word].int_value());
+    }
+    const ipashelf::Json* seconds = vector.find("seconds");
+    auto handshake = ipashelf::SapSoftwareHandshake::create_deterministic(
+        certificate_bytes, entropy_words,
+        seconds != nullptr ? seconds->int_value() : 0,
+        u32_field(vector, "microseconds"));
+    expect(handshake.has_value(), "handshake construction succeeds");
+    if (!handshake) continue;
+    expect_bytes(handshake.value()->request(), hex_field(vector, "request"),
+                 "handshake request known answer");
+    const std::array<std::uint8_t, 16> response_key =
+        handshake.value()->response_key();
+    const std::array<std::uint8_t, 16> response_echo =
+        handshake.value()->response_echo();
+    expect_bytes(ipashelf::Bytes(response_key.begin(), response_key.end()),
+                 hex_field(vector, "responseKey"),
+                 "handshake response key known answer");
+    expect_bytes(ipashelf::Bytes(response_echo.begin(), response_echo.end()),
+                 hex_field(vector, "responseEcho"),
+                 "handshake response echo known answer");
+
+    auto session = handshake.value()->complete(hex_field(vector, "reply"));
+    expect(session.has_value(), "handshake completion succeeds");
+    if (!session) continue;
+    ipashelf::Bytes words_bytes;
+    for (std::uint32_t word : session.value().random_words) {
+      for (int byte = 0; byte < 4; ++byte) {
+        words_bytes.push_back(
+            static_cast<std::uint8_t>((word >> (8 * byte)) & 0xff));
+      }
+    }
+    const ipashelf::Json* random_hash = vector.find("randomHash");
+    expect_eq(ipashelf::sha256_hex(words_bytes.data(), words_bytes.size()),
+              random_hash != nullptr ? random_hash->string_value()
+                                     : std::string{},
+              "handshake random state hash");
+    expect_eq(session.value().random_cursor, u32_field(vector, "cursor"),
+              "handshake random cursor");
+    expect_eq(session.value().seed30, u32_field(vector, "seed30"),
+              "handshake seed30");
+    expect_eq(session.value().seed54, u32_field(vector, "seed54"),
+              "handshake seed54");
+    expect_bytes(ipashelf::Bytes(session.value().f2_input2.begin(),
+                                 session.value().f2_input2.end()),
+                 hex_field(vector, "f2Input2"), "handshake F2 input 2");
+    expect_bytes(session.value().f2_tail, hex_field(vector, "f2Tail"),
+                 "handshake F2 tail");
+    ipashelf::Bytes expected_source(576);
+    for (int i = 0; i < 576; ++i) {
+      expected_source[i] = static_cast<std::uint8_t>((i * 17 + 3) & 0xff);
+    }
+    expect_bytes(session.value().source, expected_source,
+                 "handshake source material");
+    ipashelf::Bytes expected_input1(16);
+    for (int i = 0; i < 16; ++i) {
+      expected_input1[i] = static_cast<std::uint8_t>(32 + i + 0x2d);
+    }
+    expect_bytes(ipashelf::Bytes(session.value().f2_input1.begin(),
+                                 session.value().f2_input1.end()),
+                 expected_input1, "handshake F2 input 1");
+    expect_eq(session.value().f3.size(), std::size_t{159},
+              "handshake signature record length");
+    if (!first_case) first_case = index;
+
+    // A truncated or foreign reply must be rejected, never signed with.
+    const ipashelf::Bytes reply = hex_field(vector, "reply");
+    expect(!handshake.value()->complete(ipashelf::Bytes{}),
+           "empty reply is rejected");
+    expect(!handshake.value()->complete(
+               ipashelf::Bytes(reply.begin(), reply.begin() + 21)),
+           "truncated reply is rejected");
+    expect(!handshake.value()->complete(
+               ipashelf::Bytes(reply.begin(), reply.end() - 1)),
+           "short reply is rejected");
+  }
+}
+
+void test_sap_software_backend() {
+  auto backend = ipashelf::create_platform_sap_backend();
+  expect(backend.has_value(), "platform SAP backend is the software backend");
+  if (!backend) return;
+  const ipashelf::Bytes hardware = {0xde, 0xad, 0xbe, 0xef, 0x00, 0x11};
+  auto context = backend.value()->initialize(hardware);
+  expect(context.has_value() && context.value() != 0,
+         "software backend initializes");
+  if (!context) return;
+  auto exchange = backend.value()->exchange(200, hardware, context.value(),
+                                            ipashelf::Bytes{});
+  expect(!exchange, "exchange rejects a missing certificate container");
+  auto sign = backend.value()->sign(context.value(), ipashelf::Bytes{1, 2, 3});
+  expect(!sign, "signing before setup completion fails");
+  expect(backend.value()->teardown(context.value()).ok(),
+         "software backend tears down");
+  expect(backend.value()->teardown(context.value()).ok(),
+         "teardown is idempotent");
+}
+
 int main(int argc, char** argv) {
   if (argc < 2) {
     std::cerr << "usage: test_core <fixtures-dir>\n";
@@ -1897,6 +2940,10 @@ int main(int argc, char** argv) {
   const std::string fixtures = argv[1];
 
   test_crypto();
+  test_crypto_primitives();
+  test_sap_software_synthetic();
+  test_sap_software_handshake(fixtures);
+  test_sap_software_backend();
   test_json();
   test_plist_xml();
   test_plist_binary(fixtures + "/sample.bplist");
@@ -1916,6 +2963,13 @@ int main(int argc, char** argv) {
   test_purchase_license_exists();
   test_version_identifiers();
   test_download_parsing();
+  test_phone_storefront();
+  test_login_phone_storefront_header();
+  test_login_redirects();
+  test_ent_download();
+  test_ent_download_fallbacks();
+  test_owned_apps();
+  test_version_metadata(fixtures);
   test_map_store_failure();
   test_storefronts();
   test_app_details();

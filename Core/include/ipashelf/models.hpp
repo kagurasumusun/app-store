@@ -72,6 +72,8 @@ struct App {
   std::vector<std::string> languages;
   std::vector<std::string> screenshot_urls;
   std::vector<std::string> ipad_screenshot_urls;
+  /// Purchase date (Unix seconds), populated by `StoreClient::owned_apps`.
+  std::int64_t purchase_date_unix = 0;
 };
 
 /// A customer review from Apple's public review feed.

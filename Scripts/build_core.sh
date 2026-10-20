@@ -36,7 +36,10 @@ cpp_sources=(
   "Core/src/http.cpp"
   "Core/src/bag.cpp"
   "Core/src/sap.cpp"
+  "Core/src/sap_software.cpp"
+  "Core/src/sap_tables.cpp"
   "Core/src/store_client.cpp"
+  "Core/src/owned_apps.cpp"
   "Core/src/ipa.cpp"
   "Core/src/ota.cpp"
   "Core/src/x509.cpp"
@@ -63,6 +66,7 @@ done
 fixtures="${build_dir}/fixtures"
 rm -rf "${fixtures}"
 mkdir -p "${fixtures}"
+cp "${root}/Core/tests/sap_handshake_fixture.json" "${fixtures}/sap_handshake_fixture.json"
 
 python3 - "${fixtures}/sample.bplist" <<'PY'
 import datetime
@@ -101,11 +105,24 @@ info = {
     "CFBundleSupportedPlatforms": ["iPhoneOS"],
     "MinimumOSVersion": "18.0",
 }
+manifest = {
+    "SinfPaths": [
+        "SC_Info/Sample.sinf",
+        "Frameworks/Kit.framework/SC_Info/Kit.sinf",
+    ],
+}
 with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as archive:
     archive.writestr("Payload/Sample.app/Info.plist",
                      plistlib.dumps(info, fmt=plistlib.FMT_BINARY))
     archive.writestr("Payload/Sample.app/Sample", b"MACH-O-PAYLOAD")
     archive.writestr("Payload/Sample.app/SC_Info/Sample.sinf", b"original-sinf")
+    archive.writestr("Payload/Sample.app/SC_Info/Manifest.plist",
+                     plistlib.dumps(manifest, fmt=plistlib.FMT_BINARY))
+    archive.writestr("Payload/Sample.app/Frameworks/Kit.framework/Kit",
+                     b"MACH-O-FRAMEWORK")
+    archive.writestr(
+        "Payload/Sample.app/Frameworks/Kit.framework/SC_Info/Kit.sinf",
+        b"original-kit-sinf")
     archive.writestr("Payload/Sample.app/Assets.car", b"\x00" * 2048)
     archive.writestr("iTunesMetadata.plist", b"stale-metadata")
 PY
@@ -133,11 +150,16 @@ with zipfile.ZipFile(sys.argv[2]) as archive:
     assert "Payload/Sample.app/Assets.car" in names
     assert "iTunesArtwork" in names
     assert archive.read("Payload/Sample.app/Sample") == b"MACH-O-PAYLOAD"
-    assert archive.read("Payload/Sample.app/SC_Info/Sample.sinf") == b"patched-sinf"
-    metadata = plistlib.loads(archive.read("iTunesMetadata.plist"))
+    assert archive.read("Payload/Sample.app/SC_Info/Sample.sinf") == b"patched-sinf-1"
+    assert archive.read(
+        "Payload/Sample.app/Frameworks/Kit.framework/SC_Info/Kit.sinf"
+    ) == b"patched-sinf-2"
+    raw_metadata = archive.read("iTunesMetadata.plist")
+    assert raw_metadata.startswith(b"bplist00"), "metadata must be binary plist"
+    metadata = plistlib.loads(raw_metadata)
     assert metadata["apple-id"] == "user@example.com"
+    assert metadata["userName"] == "user@example.com"
     assert metadata["itemId"] == 123456789
-    assert metadata["SinfPaths"] == ["Payload/Sample.app/SC_Info/Sample.sinf"]
 print("python IPA validation: ok")
 PY
 

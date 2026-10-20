@@ -2,6 +2,7 @@
 
 #include "ipashelf/ipa.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -44,9 +45,25 @@ bool is_main_info_plist(std::string_view name) {
   return parts[2] == "Info.plist";
 }
 
-
 bool matches_name(const char* entry_name, std::string_view candidate) {
   return entry_name != nullptr && candidate == entry_name;
+}
+
+Result<Bytes> extract_entry(mz_zip_archive& archive, mz_uint index,
+                            std::uint64_t uncompressed_size,
+                            std::string_view label) {
+  if (uncompressed_size == 0 || uncompressed_size > 4 * 1024 * 1024) {
+    return make_error(ErrorCode::kParse,
+                      std::string(label) + " has an invalid size");
+  }
+  Bytes buffer(static_cast<std::size_t>(uncompressed_size));
+  if (!mz_zip_reader_extract_to_mem(&archive, index, buffer.data(),
+                                    buffer.size(), 0)) {
+    return make_error(ErrorCode::kParse,
+                      zip_error(archive, "cannot extract " +
+                                             std::string(label)));
+  }
+  return buffer;
 }
 
 }  // namespace
@@ -66,21 +83,17 @@ Result<IpaInfo> inspect_ipa(const std::string& path) {
   std::error_code size_error;
   info.file_size = std::filesystem::file_size(path, size_error);
   const mz_uint count = mz_zip_reader_get_num_files(&archive);
-  for (mz_uint index = 0; index < count; ++index) {
+
+  bool found_info = false;
+  for (mz_uint index = 0; index < count && !found_info; ++index) {
     mz_zip_archive_file_stat stat{};
     if (!mz_zip_reader_file_stat(&archive, index, &stat)) continue;
     if (!is_main_info_plist(stat.m_filename)) continue;
     const auto parts = split_path(stat.m_filename);
-    if (stat.m_uncomp_size == 0 || stat.m_uncomp_size > 4 * 1024 * 1024) {
-      return make_error(ErrorCode::kParse, "IPA Info.plist has an invalid size");
-    }
-    Bytes buffer(static_cast<std::size_t>(stat.m_uncomp_size));
-    if (!mz_zip_reader_extract_to_mem(&archive, index, buffer.data(),
-                                      buffer.size(), 0)) {
-      return make_error(ErrorCode::kParse,
-                        zip_error(archive, "cannot extract IPA Info.plist"));
-    }
-    auto plist = PlistValue::parse(buffer);
+    auto buffer = extract_entry(archive, index, stat.m_uncomp_size,
+                                "IPA Info.plist");
+    if (!buffer) return buffer.error();
+    auto plist = PlistValue::parse(buffer.value());
     if (!plist) return plist.error();
     if (!plist.value().is_dictionary()) {
       return make_error(ErrorCode::kParse, "IPA Info.plist is not a dictionary");
@@ -93,6 +106,7 @@ Result<IpaInfo> inspect_ipa(const std::string& path) {
     info.app_directory = "Payload/" + parts[1] + "/";
     info.supported_platforms.clear();
     const PlistValue* platforms = document.find("CFBundleSupportedPlatforms");
+    info.declares_supported_platforms = platforms != nullptr;
     if (platforms != nullptr && platforms->is_array()) {
       for (const auto& entry : platforms->array_items()) {
         if (entry.is_string()) {
@@ -104,9 +118,43 @@ Result<IpaInfo> inspect_ipa(const std::string& path) {
       return make_error(ErrorCode::kParse,
                         "IPA Info.plist is missing the bundle identity");
     }
-    return info;
+    found_info = true;
   }
-  return make_error(ErrorCode::kParse, "IPA does not contain Payload/*.app");
+  if (!found_info) {
+    return make_error(ErrorCode::kParse, "IPA does not contain Payload/*.app");
+  }
+
+  // The SC_Info manifest, when present, authoritatively lists where each
+  // FairPlay sinf blob belongs inside the bundle. Its paths are relative to
+  // the .app directory.
+  const std::string manifest_path =
+      info.app_directory + "SC_Info/Manifest.plist";
+  for (mz_uint index = 0; index < count; ++index) {
+    mz_zip_archive_file_stat stat{};
+    if (!mz_zip_reader_file_stat(&archive, index, &stat)) continue;
+    if (!matches_name(stat.m_filename, manifest_path)) continue;
+    auto buffer = extract_entry(archive, index, stat.m_uncomp_size,
+                                "IPA SC_Info manifest");
+    if (!buffer) return buffer.error();
+    auto plist = PlistValue::parse(buffer.value());
+    if (!plist) return plist.error();
+    if (!plist.value().is_dictionary()) {
+      return make_error(ErrorCode::kParse,
+                        "IPA SC_Info manifest is not a dictionary");
+    }
+    const PlistValue* paths = plist.value().find("SinfPaths");
+    if (paths != nullptr && paths->is_array()) {
+      for (const auto& entry : paths->array_items()) {
+        if (entry.is_string() && !entry.string_value().empty()) {
+          info.sinf_paths.push_back(info.app_directory +
+                                    entry.string_value());
+        }
+      }
+    }
+    break;
+  }
+
+  return info;
 }
 
 std::string default_sinf_path(const IpaInfo& info) {
@@ -114,14 +162,76 @@ std::string default_sinf_path(const IpaInfo& info) {
   return info.app_directory + "SC_Info/" + info.executable + ".sinf";
 }
 
+Result<std::vector<std::pair<std::string, Bytes>>> resolve_sinf_entries(
+    const IpaInfo& info, const std::vector<Sinf>& sinfs) {
+  std::vector<std::pair<std::string, Bytes>> entries;
+  if (sinfs.empty()) return entries;
+  if (!info.sinf_paths.empty()) {
+    if (info.sinf_paths.size() != sinfs.size()) {
+      return make_error(
+          ErrorCode::kParse,
+          "download response and package manifest disagree on the number "
+          "of sinf entries");
+    }
+    entries.reserve(sinfs.size());
+    for (std::size_t index = 0; index < sinfs.size(); ++index) {
+      entries.emplace_back(info.sinf_paths[index], sinfs[index].data);
+    }
+    return entries;
+  }
+  const std::string fallback = default_sinf_path(info);
+  if (fallback.empty()) {
+    return make_error(ErrorCode::kParse,
+                      "IPA does not declare an executable for the sinf path");
+  }
+  entries.emplace_back(fallback, sinfs.front().data);
+  return entries;
+}
+
+Status validate_ipa_platform(const IpaInfo& info, Platform platform) {
+  std::string_view expected;
+  switch (platform) {
+    case Platform::kIPhone:
+    case Platform::kIPad:
+      expected = "iPhoneOS";
+      break;
+    case Platform::kAppleTV:
+      expected = "AppleTVOS";
+      break;
+    case Platform::kWatchOS:
+      expected = "WatchOS";
+      break;
+    case Platform::kVisionOS:
+      expected = "XROS";
+      break;
+    default:
+      return ok_status();
+  }
+  // Legacy iOS apps may predate CFBundleSupportedPlatforms. Only a missing
+  // declaration qualifies; an empty or conflicting one does not.
+  if (expected == "iPhoneOS" && !info.declares_supported_platforms) {
+    return ok_status();
+  }
+  if (std::find(info.supported_platforms.begin(),
+                info.supported_platforms.end(),
+                expected) != info.supported_platforms.end()) {
+    return ok_status();
+  }
+  return fail(ErrorCode::kUnsupported,
+              "downloaded package does not declare " + std::string(expected) +
+                  " support");
+}
+
 Status write_patched_ipa(const IpaPatchOptions& options,
                          const CancellationToken& token) {
   if (options.source_path.empty() || options.destination_path.empty()) {
     return fail(ErrorCode::kInvalidArgument, "IPA paths are required");
   }
-  if (!options.sinf.empty() && options.sinf_path.empty()) {
-    return fail(ErrorCode::kInvalidArgument,
-                "a sinf payload requires a sinf path");
+  for (const auto& [sinf_path, sinf_data] : options.sinf_entries) {
+    if (sinf_path.empty() || sinf_data.empty()) {
+      return fail(ErrorCode::kInvalidArgument,
+                  "sinf entries require both a path and a payload");
+    }
   }
 
   mz_zip_archive reader{};
@@ -147,6 +257,14 @@ Status write_patched_ipa(const IpaPatchOptions& options,
     std::filesystem::remove(temporary, ignored);
   };
 
+  const auto is_sinf_target = [&](const char* entry_name) {
+    for (const auto& [sinf_path, sinf_data] : options.sinf_entries) {
+      (void)sinf_data;
+      if (matches_name(entry_name, sinf_path)) return true;
+    }
+    return false;
+  };
+
   const mz_uint count = mz_zip_reader_get_num_files(&reader);
   for (mz_uint index = 0; index < count; ++index) {
     if (token.cancelled()) {
@@ -160,9 +278,7 @@ Status write_patched_ipa(const IpaPatchOptions& options,
       return fail(ErrorCode::kParse, message);
     }
     if (is_root_metadata(stat.m_filename)) continue;
-    if (!options.sinf.empty() && matches_name(stat.m_filename, options.sinf_path)) {
-      continue;
-    }
+    if (is_sinf_target(stat.m_filename)) continue;
     if (!mz_zip_writer_add_from_zip_reader(&writer, &reader, index)) {
       const std::string message = zip_error(writer, "cannot copy IPA entry");
       cleanup();
@@ -170,7 +286,8 @@ Status write_patched_ipa(const IpaPatchOptions& options,
     }
   }
 
-  const std::string metadata = options.metadata.dump_xml();
+  // Apple's own tooling writes the metadata document as a binary plist.
+  const Bytes metadata = options.metadata.dump_binary();
   if (!mz_zip_writer_add_mem_ex(&writer, "iTunesMetadata.plist", metadata.data(),
                                 metadata.size(), nullptr, 0,
                                 MZ_DEFAULT_COMPRESSION, 0, 0)) {
@@ -188,10 +305,9 @@ Status write_patched_ipa(const IpaPatchOptions& options,
       return fail(ErrorCode::kStorage, message);
     }
   }
-  if (!options.sinf.empty()) {
-    const Bytes& sinf_data = options.sinf;
-    if (!mz_zip_writer_add_mem_ex(&writer, options.sinf_path.c_str(),
-                                  sinf_data.data(), sinf_data.size(), nullptr, 0,
+  for (const auto& [sinf_path, sinf_data] : options.sinf_entries) {
+    if (!mz_zip_writer_add_mem_ex(&writer, sinf_path.c_str(), sinf_data.data(),
+                                  sinf_data.size(), nullptr, 0,
                                   MZ_DEFAULT_COMPRESSION, 0, 0)) {
       const std::string message = zip_error(writer, "cannot write sinf");
       cleanup();
@@ -222,38 +338,16 @@ Status write_patched_ipa(const IpaPatchOptions& options,
   return ok_status();
 }
 
-PlistValue build_itunes_metadata(const App& app, const DownloadOffer& offer,
-                                 const Account& account,
-                                 std::string_view sinf_path) {
+PlistValue build_itunes_metadata(const DownloadOffer& offer,
+                                 const Account& account) {
+  // The server-provided metadata already carries the item identity; the
+  // only additions Apple's installers expect are the purchasing account.
   PlistValue metadata = offer.metadata.is_dictionary()
                             ? offer.metadata
                             : PlistValue::dictionary();
-  if (app.id > 0) metadata.set("itemId", PlistValue::integer(app.id));
-  if (!app.bundle_id.empty()) {
-    metadata.set("softwareVersionBundleId",
-                 PlistValue::string(app.bundle_id));
-  }
-  if (!offer.bundle_id.empty()) {
-    metadata.set("softwareVersionBundleId",
-                 PlistValue::string(offer.bundle_id));
-  }
-  if (!offer.display_version.empty()) {
-    metadata.set("bundleShortVersionString",
-                 PlistValue::string(offer.display_version));
-  }
-  if (!offer.external_version_id.empty()) {
-    metadata.set("softwareVersionExternalIdentifier",
-                 PlistValue::string(offer.external_version_id));
-  }
-  if (!app.name.empty()) metadata.set("itemName", PlistValue::string(app.name));
   if (!account.email.empty()) {
     metadata.set("apple-id", PlistValue::string(account.email));
     metadata.set("userName", PlistValue::string(account.email));
-  }
-  if (!sinf_path.empty()) {
-    PlistValue paths = PlistValue::array();
-    paths.append(PlistValue::string(std::string(sinf_path)));
-    metadata.set("SinfPaths", std::move(paths));
   }
   return metadata;
 }
