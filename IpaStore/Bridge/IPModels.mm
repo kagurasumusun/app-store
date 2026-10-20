@@ -2,6 +2,8 @@
 
 #import "IPInternal.h"
 
+#include <algorithm>
+
 static NSString *IPString(const std::string &value) {
   return [[NSString alloc] initWithBytes:value.data()
                                   length:value.size()
@@ -171,6 +173,20 @@ static NSArray<NSString *> *IPPlatforms(const std::vector<ipashelf::Platform> &p
     _sort = @"relevance";
   }
   return self;
+}
+
+- (ipashelf::SearchQuery)coreQuery {
+  ipashelf::SearchQuery query;
+  query.term = _term.UTF8String ?: "";
+  query.region = _region.UTF8String ?: "";
+  query.platform = IPCorePlatform(_platform);
+  query.limit = static_cast<int>(std::clamp<NSInteger>(_limit, 1, 200));
+  query.genre_id = _genreID;
+  query.sort = _sort.UTF8String ?: "relevance";
+  if (_freeOnly != nil) {
+    query.free_only = _freeOnly.boolValue;
+  }
+  return query;
 }
 
 @end

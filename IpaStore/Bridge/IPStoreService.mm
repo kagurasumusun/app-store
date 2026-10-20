@@ -18,9 +18,7 @@
 
 NSErrorDomain const IPStoreErrorDomain = @"com.example.ipastore.error";
 
-namespace {
-
-ipashelf::Platform CorePlatform(IPStorePlatform platform) {
+ipashelf::Platform IPCorePlatform(IPStorePlatform platform) {
   switch (platform) {
     case IPStorePlatformIPad:
       return ipashelf::Platform::kIPad;
@@ -37,6 +35,8 @@ ipashelf::Platform CorePlatform(IPStorePlatform platform) {
       return ipashelf::Platform::kIPhone;
   }
 }
+
+namespace {
 
 IPStoreErrorCode PublicCode(ipashelf::ErrorCode code) {
   switch (code) {
@@ -252,7 +252,8 @@ NSString *SafeFilename(NSString *value) {
     didFinishDownloadingToURL:(NSURL *)location {
   IPDownloadContext *context = [self contextForTask:downloadTask];
   if (context == nil) return;
-  NSString *name = [NSString stringWithFormat:@"ipastore-%@.ipa", downloadTask.taskIdentifier];
+  NSString *name = [NSString stringWithFormat:@"ipastore-%lu.ipa",
+                                             (unsigned long)downloadTask.taskIdentifier];
   NSString *destination = [NSTemporaryDirectory() stringByAppendingPathComponent:name];
   NSFileManager *manager = [NSFileManager defaultManager];
   [manager removeItemAtPath:destination error:nil];
@@ -401,8 +402,8 @@ static ipashelf::StoreClient MakeStoreClient(void) {
       }
       IPStoreAccount *account =
           [[IPStoreAccount alloc] initWithAccount:result.value().account];
-      [_accountStore upsertAccount:account];
-      [_accountStore setActiveAccount:account];
+      [self->_accountStore upsertAccount:account];
+      [self->_accountStore setActiveAccount:account];
       completion([[IPStoreLoginResult alloc] initWithAccount:account
                                           twoFactorRequired:NO],
                  nil);
@@ -420,8 +421,8 @@ static ipashelf::StoreClient MakeStoreClient(void) {
     ipashelf::StoreClient client = MakeStoreClient();
     ipashelf::CancellationSource source;
     auto result = client.search(term.UTF8String ?: "",
-                                TrimmedRegion(region, _accountStore.activeAccount).UTF8String ?: "us",
-                                CorePlatform(platform),
+                                TrimmedRegion(region, self->_accountStore.activeAccount).UTF8String ?: "us",
+                                IPCorePlatform(platform),
                                 static_cast<int>(std::clamp<NSInteger>(limit, 1, 200)),
                                 source.token());
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -453,7 +454,7 @@ static ipashelf::StoreClient MakeStoreClient(void) {
     ipashelf::StoreClient client = MakeStoreClient();
     ipashelf::SearchQuery query = [filter coreQuery];
     if (query.region.empty()) {
-      query.region = TrimmedRegion(filter.region, _accountStore.activeAccount).UTF8String ?: "us";
+      query.region = TrimmedRegion(filter.region, self->_accountStore.activeAccount).UTF8String ?: "us";
     }
     ipashelf::CancellationSource source;
     auto result = client.search(query, source.token());
@@ -481,7 +482,7 @@ static ipashelf::StoreClient MakeStoreClient(void) {
     ipashelf::CancellationSource source;
     auto result = client.reviews(
         appID,
-        TrimmedRegion(region, _accountStore.activeAccount).UTF8String ?: "us",
+        TrimmedRegion(region, self->_accountStore.activeAccount).UTF8String ?: "us",
         static_cast<int>(std::max<NSInteger>(page, 1)), source.token());
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!result) {
@@ -504,8 +505,8 @@ static ipashelf::StoreClient MakeStoreClient(void) {
     ipashelf::CancellationSource source;
     auto result = client.lookup(appID,
                                 bundleID.UTF8String ?: "",
-                                TrimmedRegion(region, _accountStore.activeAccount).UTF8String ?: "us",
-                                CorePlatform(platform), source.token());
+                                TrimmedRegion(region, self->_accountStore.activeAccount).UTF8String ?: "us",
+                                IPCorePlatform(platform), source.token());
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!result) {
         completion(nil, MakeError(result.error()));
@@ -529,8 +530,8 @@ static ipashelf::StoreClient MakeStoreClient(void) {
     ipashelf::CancellationSource source;
     auto result = client.latest_external_version_id(
         coreApp,
-        TrimmedRegion(region, _accountStore.activeAccount).UTF8String ?: "us",
-        CorePlatform(platform), source.token());
+        TrimmedRegion(region, self->_accountStore.activeAccount).UTF8String ?: "us",
+        IPCorePlatform(platform), source.token());
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!result) {
         completion(nil, MakeError(result.error()));
@@ -553,7 +554,7 @@ static ipashelf::StoreClient MakeStoreClient(void) {
     coreApp.bundle_id = app.bundleID.UTF8String ?: "";
     ipashelf::CancellationSource source;
     auto result = client.version_identifiers(
-        account.coreAccount, coreApp, CorePlatform(platform), source.token());
+        account.coreAccount, coreApp, IPCorePlatform(platform), source.token());
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!result) {
         completion(nil, MakeError(result.error()));
@@ -598,10 +599,10 @@ static ipashelf::StoreClient MakeStoreClient(void) {
     const std::string version =
         externalVersionID.length > 0 ? std::string(externalVersionID.UTF8String) : std::string();
     auto offer = client.download_offer(coreAccount, coreApp, version,
-                                       CorePlatform(platform), source.token());
+                                       IPCorePlatform(platform), source.token());
     if (!offer && offer.error().code == ipashelf::ErrorCode::kLicenseRequired) {
       auto purchase = client.purchase(coreAccount, coreApp,
-                                      CorePlatform(platform), source.token());
+                                      IPCorePlatform(platform), source.token());
       if (!purchase) {
         dispatch_async(dispatch_get_main_queue(), ^{
           completion(nil, MakeError(purchase.error()));
@@ -609,7 +610,7 @@ static ipashelf::StoreClient MakeStoreClient(void) {
         return;
       }
       offer = client.download_offer(coreAccount, coreApp, version,
-                                    CorePlatform(platform), source.token());
+                                    IPCorePlatform(platform), source.token());
     }
     if (!offer) {
       dispatch_async(dispatch_get_main_queue(), ^{
@@ -768,20 +769,3 @@ static ipashelf::StoreClient MakeStoreClient(void) {
 
 @end
 
-@implementation IPStoreSearchFilter (Core)
-
-- (ipashelf::SearchQuery)coreQuery {
-  ipashelf::SearchQuery query;
-  query.term = _term.UTF8String ?: "";
-  query.region = _region.UTF8String ?: "";
-  query.platform = CorePlatform(_platform);
-  query.limit = static_cast<int>(std::clamp<NSInteger>(_limit, 1, 200));
-  query.genre_id = _genreID;
-  query.sort = _sort.UTF8String ?: "relevance";
-  if (_freeOnly != nil) {
-    query.free_only = _freeOnly.boolValue;
-  }
-  return query;
-}
-
-@end

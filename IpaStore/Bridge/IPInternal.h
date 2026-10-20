@@ -19,7 +19,6 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @interface IPStoreApp ()
-@property (nonatomic, readonly) long long appID;
 @property (nonatomic, copy, readwrite) NSString *bundleID;
 @property (nonatomic, copy, readwrite) NSString *name;
 @property (nonatomic, copy, readwrite) NSString *version;
@@ -91,6 +90,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithStorefront:(const ipashelf::Storefront &)storefront;
 #endif
 @end
+
+#ifdef __cplusplus
+/// Bridges the public Objective-C enum to the portable core.
+[[nodiscard]] ipashelf::Platform IPCorePlatform(IPStorePlatform platform);
+#endif
 
 @interface IPStoreSearchFilter ()
 #ifdef __cplusplus
