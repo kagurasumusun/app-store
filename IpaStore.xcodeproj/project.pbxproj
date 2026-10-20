@@ -16,6 +16,7 @@
 		92C1973F6840AC053839F6AA /* InstallSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DA8B8D57FFCAC18C64DC108 /* InstallSheet.swift */; };
 		5EBFF092CE2F0128B5A0605F /* IpaStoreApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0687B2F4F4417592179EC531 /* IpaStoreApp.swift */; };
 		FB8528F96CDFDA05780A738D /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3305336A9E4476FBC58FDAF3 /* LibraryView.swift */; };
+		19B94C1FF5339835DF657596 /* PurchasedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45E42225B2B5E719CFB3ECB7 /* PurchasedView.swift */; };
 		719BCE804E00AE3ADFB901EC /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BCEFB0AAE2E4C6F05C2CD1F /* RootView.swift */; };
 		E256E6A0B2076C137E95C750 /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6BCB8DF13BDAE68918A6516 /* SearchView.swift */; };
 		841E7512DEBDF432CA34C95E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D700D17156C1206C92E1D397 /* SettingsView.swift */; };
@@ -36,11 +37,11 @@
 		C393DD0AFD1F4DDB585F9AE0 /* json.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 60B014745F8E1021B1D3FB79 /* json.cpp */; };
 		F156FC558D8F1BAD24294D76 /* models.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DC03F999BB27EE60630A323C /* models.cpp */; };
 		7C4EAD96585D08D00450F2D8 /* ota.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 699C239833A961096D11D2F2 /* ota.cpp */; };
+		EA4E8EF24B3F837642948007 /* owned_apps.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 27D7368539AC0DE902542D79 /* owned_apps.cpp */; };
 		B2CDB8A071CE881B3C6DBC01 /* plist.cpp in Sources */ = {isa = PBXBuildFile; fileRef = ED4D4D66CA4ECAAFE555128E /* plist.cpp */; };
 		C159A223796183E2E171B257 /* sap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1A2F93F6C38BB251698FF1B3 /* sap.cpp */; };
-		5A95F102A27C4E01B3D50002 /* sap_software.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5A95F101A27C4E01B3D50001 /* sap_software.cpp */; };
-		5A95F104A27C4E01B3D50004 /* sap_tables.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5A95F103A27C4E01B3D50003 /* sap_tables.cpp */; };
-		5A95F106A27C4E01B3D50006 /* owned_apps.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5A95F105A27C4E01B3D50005 /* owned_apps.cpp */; };
+		53A48654F5698B14F19073BA /* sap_software.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F78CE5B851814CD9D36E8B1E /* sap_software.cpp */; };
+		1975CB41BC9530F9AD24A11B /* sap_tables.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 693A8FF6289B2F17506A5709 /* sap_tables.cpp */; };
 		38F6A3A9AEAEA9695FE592E1 /* store_client.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 28025EC31DA02BB9AC74DC88 /* store_client.cpp */; };
 		BB80F2CCF6B45B249BD59028 /* url.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D7BB5EECB3F02C96439DFF7E /* url.cpp */; };
 		BF29F655294A7A55750C738A /* x509.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 69642038DE614F9D51958626 /* x509.cpp */; };
@@ -65,6 +66,7 @@
 		6DA8B8D57FFCAC18C64DC108 /* InstallSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallSheet.swift; sourceTree = "<group>"; };
 		0687B2F4F4417592179EC531 /* IpaStoreApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IpaStoreApp.swift; sourceTree = "<group>"; };
 		3305336A9E4476FBC58FDAF3 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
+		45E42225B2B5E719CFB3ECB7 /* PurchasedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PurchasedView.swift; sourceTree = "<group>"; };
 		2BCEFB0AAE2E4C6F05C2CD1F /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		B6BCB8DF13BDAE68918A6516 /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
 		D700D17156C1206C92E1D397 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -91,8 +93,8 @@
 		EBDFAF1461ACC8204CB4C9D6 /* ota.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ota.hpp; sourceTree = "<group>"; };
 		E9F6DB31BF8CBEDAB9BB8EAA /* plist.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = plist.hpp; sourceTree = "<group>"; };
 		3679BD362732B44FE20E0ADA /* sap.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = sap.hpp; sourceTree = "<group>"; };
-		5A95F107A27C4E01B3D50007 /* sap_software.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = sap_software.hpp; sourceTree = "<group>"; };
-		5A95F108A27C4E01B3D50008 /* sap_tables.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = sap_tables.hpp; sourceTree = "<group>"; };
+		C770C64E03010F4E2CBE82DB /* sap_software.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = sap_software.hpp; sourceTree = "<group>"; };
+		8B32D13C3FF203EB96264222 /* sap_tables.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = sap_tables.hpp; sourceTree = "<group>"; };
 		3E07690D60ABE69175FF31D1 /* store_client.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = store_client.hpp; sourceTree = "<group>"; };
 		25D38BDBF249B8AF0BDB5BF9 /* url.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = url.hpp; sourceTree = "<group>"; };
 		B4AF42DC4EB43B484907EEE1 /* x509.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = x509.hpp; sourceTree = "<group>"; };
@@ -104,11 +106,11 @@
 		60B014745F8E1021B1D3FB79 /* json.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = json.cpp; sourceTree = "<group>"; };
 		DC03F999BB27EE60630A323C /* models.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = models.cpp; sourceTree = "<group>"; };
 		699C239833A961096D11D2F2 /* ota.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ota.cpp; sourceTree = "<group>"; };
+		27D7368539AC0DE902542D79 /* owned_apps.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = owned_apps.cpp; sourceTree = "<group>"; };
 		ED4D4D66CA4ECAAFE555128E /* plist.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = plist.cpp; sourceTree = "<group>"; };
 		1A2F93F6C38BB251698FF1B3 /* sap.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = sap.cpp; sourceTree = "<group>"; };
-		5A95F101A27C4E01B3D50001 /* sap_software.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = sap_software.cpp; sourceTree = "<group>"; };
-		5A95F103A27C4E01B3D50003 /* sap_tables.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = sap_tables.cpp; sourceTree = "<group>"; };
-		5A95F105A27C4E01B3D50005 /* owned_apps.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = owned_apps.cpp; sourceTree = "<group>"; };
+		F78CE5B851814CD9D36E8B1E /* sap_software.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = sap_software.cpp; sourceTree = "<group>"; };
+		693A8FF6289B2F17506A5709 /* sap_tables.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = sap_tables.cpp; sourceTree = "<group>"; };
 		28025EC31DA02BB9AC74DC88 /* store_client.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = store_client.cpp; sourceTree = "<group>"; };
 		D7BB5EECB3F02C96439DFF7E /* url.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = url.cpp; sourceTree = "<group>"; };
 		69642038DE614F9D51958626 /* x509.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = x509.cpp; sourceTree = "<group>"; };
@@ -178,6 +180,7 @@
 				2BCEFB0AAE2E4C6F05C2CD1F /* RootView.swift */,
 				3305336A9E4476FBC58FDAF3 /* LibraryView.swift */,
 				39550D0697AAC10B860E329A /* WishlistView.swift */,
+				45E42225B2B5E719CFB3ECB7 /* PurchasedView.swift */,
 				5EAA8BEFFABD8E6E4544F677 /* Components.swift */,
 				63767D30038A4590E38C8D9F /* AccountsView.swift */,
 				6A892E376A8A0CDDC9F45F6F /* AppModel.swift */,
@@ -247,18 +250,18 @@
 				0EED688DB846DA8813791DD4 /* bag.cpp */,
 				1543997BE659B932F6FC9189 /* crypto.cpp */,
 				1A2F93F6C38BB251698FF1B3 /* sap.cpp */,
-				5A95F101A27C4E01B3D50001 /* sap_software.cpp */,
-				5A95F103A27C4E01B3D50003 /* sap_tables.cpp */,
-				5A95F105A27C4E01B3D50005 /* owned_apps.cpp */,
+				27D7368539AC0DE902542D79 /* owned_apps.cpp */,
 				28025EC31DA02BB9AC74DC88 /* store_client.cpp */,
 				5BAFA0BD9D7997D8783D3EB1 /* http.cpp */,
 				60B014745F8E1021B1D3FB79 /* json.cpp */,
+				693A8FF6289B2F17506A5709 /* sap_tables.cpp */,
 				69642038DE614F9D51958626 /* x509.cpp */,
 				699C239833A961096D11D2F2 /* ota.cpp */,
 				AF70E69A6434A7D864F657AE /* ipa.cpp */,
 				D7BB5EECB3F02C96439DFF7E /* url.cpp */,
 				DC03F999BB27EE60630A323C /* models.cpp */,
 				ED4D4D66CA4ECAAFE555128E /* plist.cpp */,
+				F78CE5B851814CD9D36E8B1E /* sap_software.cpp */,
 				FC2793BC358CF238CBD55198 /* base.cpp */,
 			);
 			name = src;
@@ -280,13 +283,13 @@
 				1C98EDE3F3A5CC19C918F2F1 /* ipa.hpp */,
 				25D38BDBF249B8AF0BDB5BF9 /* url.hpp */,
 				3679BD362732B44FE20E0ADA /* sap.hpp */,
-				5A95F107A27C4E01B3D50007 /* sap_software.hpp */,
-				5A95F108A27C4E01B3D50008 /* sap_tables.hpp */,
 				3E07690D60ABE69175FF31D1 /* store_client.hpp */,
 				621A9950114D0C449E2242B6 /* base.hpp */,
 				7DA3A34375913ECA18151096 /* http.hpp */,
+				8B32D13C3FF203EB96264222 /* sap_tables.hpp */,
 				B4AF42DC4EB43B484907EEE1 /* x509.hpp */,
 				B8F811ABFE1D339863971DAE /* bag.hpp */,
+				C770C64E03010F4E2CBE82DB /* sap_software.hpp */,
 				CCC869A43DD3B9DB9D150C6D /* json.hpp */,
 				DEC9C98C0C7C2C666C48BCBC /* models.hpp */,
 				E9F6DB31BF8CBEDAB9BB8EAA /* plist.hpp */,
@@ -423,6 +426,7 @@
 				92C1973F6840AC053839F6AA /* InstallSheet.swift in Sources */,
 				5EBFF092CE2F0128B5A0605F /* IpaStoreApp.swift in Sources */,
 				FB8528F96CDFDA05780A738D /* LibraryView.swift in Sources */,
+				19B94C1FF5339835DF657596 /* PurchasedView.swift in Sources */,
 				719BCE804E00AE3ADFB901EC /* RootView.swift in Sources */,
 				E256E6A0B2076C137E95C750 /* SearchView.swift in Sources */,
 				841E7512DEBDF432CA34C95E /* SettingsView.swift in Sources */,
@@ -443,11 +447,11 @@
 				C393DD0AFD1F4DDB585F9AE0 /* json.cpp in Sources */,
 				F156FC558D8F1BAD24294D76 /* models.cpp in Sources */,
 				7C4EAD96585D08D00450F2D8 /* ota.cpp in Sources */,
+				EA4E8EF24B3F837642948007 /* owned_apps.cpp in Sources */,
 				B2CDB8A071CE881B3C6DBC01 /* plist.cpp in Sources */,
 				C159A223796183E2E171B257 /* sap.cpp in Sources */,
-				5A95F102A27C4E01B3D50002 /* sap_software.cpp in Sources */,
-				5A95F104A27C4E01B3D50004 /* sap_tables.cpp in Sources */,
-				5A95F106A27C4E01B3D50006 /* owned_apps.cpp in Sources */,
+				53A48654F5698B14F19073BA /* sap_software.cpp in Sources */,
+				1975CB41BC9530F9AD24A11B /* sap_tables.cpp in Sources */,
 				38F6A3A9AEAEA9695FE592E1 /* store_client.cpp in Sources */,
 				BB80F2CCF6B45B249BD59028 /* url.cpp in Sources */,
 				BF29F655294A7A55750C738A /* x509.cpp in Sources */,

@@ -404,9 +404,14 @@ struct AppDetailView: View {
                             } label: {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(version.title)
-                                        Text("Build \(version.externalVersionID)")
-                                            .font(.caption.monospaced())
+                                        HStack(spacing: 6) {
+                                            Text(version.title)
+                                            if version.isLatest {
+                                                PlatformChip(title: "Latest", highlighted: true)
+                                            }
+                                        }
+                                        Text(versionSubtitle(version))
+                                            .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
                                     Spacer()
@@ -414,6 +419,11 @@ struct AppDetailView: View {
                                         Image(systemName: "checkmark").foregroundStyle(.indigo)
                                     }
                                 }
+                            }
+                            .task {
+                                // Fill in the marketing version and release
+                                // date from the package itself, on demand.
+                                await model.enrichVersion(version, for: app)
                             }
                         }
                     } else if let message = model.versionErrors[app.appID] {
@@ -476,6 +486,14 @@ struct AppDetailView: View {
 
     // MARK: Helpers
 
+    private func versionSubtitle(_ version: StoreVersion) -> String {
+        var parts = ["Build \(version.externalVersionID)"]
+        if let date = version.releaseDateLabel {
+            parts.append(date)
+        }
+        return parts.joined(separator: " · ")
+    }
+
     private func formattedDate(_ raw: String) -> String {
         guard !raw.isEmpty else { return "—" }
         let formatter = ISO8601DateFormatter()
@@ -493,18 +511,6 @@ struct AppDetailView: View {
         case .tv: return "appletv"
         case .watch: return "watch"
         case .vision: return "xros"
-        }
-    }
-
-    private func platformDisplayName(_ identifier: String) -> String {
-        switch identifier.lowercased() {
-        case "iphone", "iphoneos": return "iPhone"
-        case "ipad", "ipados": return "iPad"
-        case "mac", "macos": return "Mac"
-        case "appletv", "tvos": return "tvOS"
-        case "watch", "watchos": return "watchOS"
-        case "xros", "vision", "visionos": return "visionOS"
-        default: return identifier
         }
     }
 }

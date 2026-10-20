@@ -97,6 +97,8 @@ struct StoreApp: Identifiable, Hashable {
     let price: Double
     let hasInAppPurchases: Bool
     let isUniversal: Bool
+    /// When the signed-in account acquired the app (purchase history only).
+    let purchaseDate: Date?
 
     let handle: IPStoreApp?
 
@@ -186,6 +188,7 @@ struct StoreApp: Identifiable, Hashable {
         price = handle.price
         hasInAppPurchases = handle.hasInAppPurchases
         isUniversal = handle.isUniversal
+        purchaseDate = handle.purchaseDate
     }
 
     init(appID: Int64, bundleID: String, name: String, version: String) {
@@ -220,6 +223,7 @@ struct StoreApp: Identifiable, Hashable {
         price = 0
         hasInAppPurchases = false
         isUniversal = false
+        purchaseDate = nil
     }
 
     static func == (lhs: StoreApp, rhs: StoreApp) -> Bool {
@@ -385,12 +389,48 @@ struct StoreGenre: Identifiable, Hashable {
 
 struct StoreVersion: Identifiable, Hashable {
     let externalVersionID: String
-    let displayVersion: String
+    /// Marketing version read from the package itself; empty until the
+    /// package metadata for this build has been loaded.
+    var displayVersion: String
+    var releaseDate: Date?
+    let isLatest: Bool
 
     var id: String { externalVersionID }
     var title: String {
-        displayVersion.isEmpty ? "Build \(externalVersionID)" : displayVersion
+        displayVersion.isEmpty ? "Build \(externalVersionID)" : "Version \(displayVersion)"
     }
+    var releaseDateLabel: String? {
+        releaseDate?.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    init(handle: IPStoreVersion) {
+        externalVersionID = handle.externalVersionID
+        displayVersion = handle.displayVersion
+        releaseDate = handle.releaseDate
+        isLatest = handle.isLatest
+    }
+
+    init(externalVersionID: String, displayVersion: String = "",
+         releaseDate: Date? = nil, isLatest: Bool = false) {
+        self.externalVersionID = externalVersionID
+        self.displayVersion = displayVersion
+        self.releaseDate = releaseDate
+        self.isLatest = isLatest
+    }
+}
+
+/// Display version and release date of one build, read from its package.
+struct StoreVersionMetadata {
+    let displayVersion: String
+    let releaseDate: Date?
+}
+
+/// One page of the account's purchase history.
+struct StoreOwnedAppsPage {
+    let apps: [StoreApp]
+    let total: Int
+    let page: Int
+    let limit: Int
 }
 
 enum LoginOutcome {

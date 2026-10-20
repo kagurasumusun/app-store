@@ -90,6 +90,7 @@ final class DownloadItem: Identifiable {
 /// traps when the selection does not match a visible tab.
 enum AppTab: String, Hashable, CaseIterable, Identifiable {
     case search
+    case purchased
     case downloads
     case library
     case wishlist
@@ -100,6 +101,7 @@ enum AppTab: String, Hashable, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .search: return "Search"
+        case .purchased: return "Purchased"
         case .downloads: return "Downloads"
         case .library: return "Library"
         case .wishlist: return "Wishlist"
@@ -110,6 +112,7 @@ enum AppTab: String, Hashable, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .search: return "magnifyingglass"
+        case .purchased: return "bag"
         case .downloads: return "arrow.down.circle"
         case .library: return "square.stack.3d.up.fill"
         case .wishlist: return "heart"
@@ -145,6 +148,18 @@ final class AppModel {
     var reviewPages: [Int64: Int] = [:]
     var reviewHasMore: [Int64: Bool] = [:]
     var isLoadingReviews: Set<Int64> = []
+
+    // Purchase history
+    var ownedApps: [StoreApp] = []
+    var ownedTotal = 0
+    var ownedPage = 0
+    var isLoadingOwned = false
+    var ownedError: String?
+    var ownedNeedsSignIn = false
+    var hasLoadedOwned = false
+    /// nil means "every platform".
+    var ownedPlatformFilter: StorePlatform?
+    var ownedSearch = ""
 
     // Downloads and library
     var downloads: [DownloadItem] = []
@@ -240,8 +255,22 @@ final class AppModel {
     // MARK: Accounts
 
     func reloadAccounts() {
+        let previousEmail = activeAccount?.email
         accounts = service.accounts
         activeAccount = service.activeAccount
+        if previousEmail != activeAccount?.email {
+            // Version lists and purchase history are tied to the licences
+            // of one account; never carry them across a switch.
+            versions.removeAll()
+            versionErrors.removeAll()
+            selectedVersion.removeAll()
+            ownedApps.removeAll()
+            ownedTotal = 0
+            ownedPage = 0
+            ownedError = nil
+            ownedNeedsSignIn = false
+            hasLoadedOwned = false
+        }
         if let account = activeAccount, !account.region.isEmpty {
             region = account.region
             syncFilter()
@@ -373,6 +402,83 @@ final class AppModel {
         } catch {
             versionErrors[app.appID] = StoreError(error).message
         }
+    }
+
+    /// Fills in a build's marketing version and release date by reading the
+    /// package itself. Called lazily as rows appear; failures simply leave
+    /// the raw build identifier in place.
+    func enrichVersion(_ version: StoreVersion, for app: StoreApp) async {
+        guard version.displayVersion.isEmpty, let account = activeAccount else { return }
+        guard let metadata = try? await service.versionMetadata(
+            app: app,
+            account: account,
+            externalVersionID: version.externalVersionID,
+            platform: platform) else { return }
+        guard var list = versions[app.appID],
+              let index = list.firstIndex(where: {
+                  $0.externalVersionID == version.externalVersionID
+              }) else { return }
+        list[index].displayVersion = metadata.displayVersion
+        list[index].releaseDate = metadata.releaseDate
+        versions[app.appID] = list
+    }
+
+    // MARK: Purchase history
+
+    var ownedHasMore: Bool { ownedApps.count < ownedTotal }
+
+    var visibleOwnedApps: [StoreApp] {
+        let needle = ownedSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return ownedApps }
+        return ownedApps.filter {
+            $0.name.localizedCaseInsensitiveContains(needle)
+                || $0.bundleID.localizedCaseInsensitiveContains(needle)
+        }
+    }
+
+    func loadOwned(reset: Bool = false) async {
+        guard let account = activeAccount else {
+            ownedApps = []
+            ownedTotal = 0
+            ownedPage = 0
+            ownedError = nil
+            ownedNeedsSignIn = true
+            hasLoadedOwned = false
+            return
+        }
+        if isLoadingOwned { return }
+        if !reset, hasLoadedOwned, !ownedHasMore { return }
+        isLoadingOwned = true
+        defer { isLoadingOwned = false }
+        let nextPage = reset ? 1 : ownedPage + 1
+        do {
+            let result = try await service.ownedApps(account: account,
+                                                      platform: ownedPlatformFilter,
+                                                      page: nextPage,
+                                                      limit: 100)
+            if reset {
+                ownedApps = result.apps
+            } else {
+                let known = Set(ownedApps.map(\.appID))
+                ownedApps.append(contentsOf: result.apps.filter { !known.contains($0.appID) })
+            }
+            ownedTotal = result.total
+            ownedPage = result.page
+            ownedError = nil
+            ownedNeedsSignIn = false
+            hasLoadedOwned = true
+        } catch {
+            let storeError = StoreError(error)
+            ownedError = storeError.message
+            ownedNeedsSignIn = storeError.isSignInProblem
+        }
+    }
+
+    func setOwnedPlatformFilter(_ platform: StorePlatform?) {
+        ownedPlatformFilter = platform
+        ownedPage = 0
+        hasLoadedOwned = false
+        Task { await loadOwned(reset: true) }
     }
 
     func latestVersion(for app: StoreApp) async -> String? {

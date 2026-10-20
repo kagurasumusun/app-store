@@ -197,11 +197,66 @@ final class StoreService {
                 if let error {
                     continuation.resume(throwing: StoreError(error))
                 } else {
-                    let mapped = (versions ?? []).map {
-                        StoreVersion(externalVersionID: $0.externalVersionID,
-                                     displayVersion: $0.displayVersion)
-                    }
-                    continuation.resume(returning: mapped)
+                    continuation.resume(returning: (versions ?? []).map(StoreVersion.init(handle:)))
+                }
+            }
+        }
+    }
+
+    /// Reads one build's marketing version and release date from the
+    /// package's own Info.plist (partial-zip range reads; the package itself
+    /// is not downloaded).
+    func versionMetadata(app: StoreApp,
+                         account: StoreAccount,
+                         externalVersionID: String,
+                         platform: StorePlatform) async throws -> StoreVersionMetadata {
+        guard let handle = app.handle else {
+            throw StoreError(code: .invalidResponse, message: "Missing app handle.")
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            bridge.versionMetadata(app: handle,
+                                   account: account.handle,
+                                   externalVersionID: externalVersionID,
+                                   platform: platform.bridge) { metadata, error in
+                if let error {
+                    continuation.resume(throwing: StoreError(error))
+                } else if let metadata {
+                    continuation.resume(returning: StoreVersionMetadata(
+                        displayVersion: metadata.displayVersion,
+                        releaseDate: metadata.releaseDate))
+                } else {
+                    continuation.resume(throwing: StoreError(
+                        code: .invalidResponse,
+                        message: "Apple did not return version metadata."))
+                }
+            }
+        }
+    }
+
+    /// One page of the account's purchase history, newest purchase first.
+    /// `platform` nil lists every platform.
+    func ownedApps(account: StoreAccount,
+                   platform: StorePlatform?,
+                   page: Int,
+                   limit: Int) async throws -> StoreOwnedAppsPage {
+        let bridgePlatform: IPStorePlatform = platform?.bridge ?? IPStorePlatform.`any`
+        return try await withCheckedThrowingContinuation { continuation in
+            bridge.ownedApps(account: account.handle,
+                             platform: bridgePlatform,
+                             page: page,
+                             limit: limit) { page, error in
+                if let error {
+                    continuation.resume(throwing: StoreError(error))
+                } else if let page {
+                    continuation.resume(returning: StoreOwnedAppsPage(
+                        apps: page.apps.map(StoreApp.init(handle:)),
+                        total: Int(page.total),
+                        page: Int(page.page),
+                        limit: Int(page.limit)))
+                } else {
+                    continuation.resume(throwing: StoreError(
+                        code: .invalidResponse,
+                        message: "Apple did not return the purchase history."))
                 }
             }
         }

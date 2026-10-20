@@ -12,6 +12,9 @@ struct RootView: View {
             Tab(AppTab.search.title, systemImage: AppTab.search.systemImage, value: AppTab.search) {
                 SearchView()
             }
+            Tab(AppTab.purchased.title, systemImage: AppTab.purchased.systemImage, value: AppTab.purchased) {
+                PurchasedView()
+            }
             Tab(AppTab.downloads.title, systemImage: AppTab.downloads.systemImage, value: AppTab.downloads) {
                 DownloadsView()
             }

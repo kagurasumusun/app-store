@@ -166,7 +166,7 @@ struct LoginView: View {
                 }
 
                 Section {
-                    Label("Apple signs every request with a device-bound SAP signature. Credentials are never sent to any server other than Apple’s.",
+                    Label("Every request is SAP-signed on this device before it is sent. Credentials are never sent to any server other than Apple’s.",
                           systemImage: "lock.shield")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -282,7 +282,7 @@ struct LoginView: View {
     private func message(for error: StoreError) -> String {
         switch error.code {
         case .signerUnavailable:
-            return "SAP signing is unavailable. CoreFP only ships on physical iPhones and iPads — the Simulator cannot sign in."
+            return "The SAP signer could not be started. Restart the app and try again."
         case .unauthorized:
             return "Apple rejected the credentials. Check the password, or enter the current two-factor code."
         case .network:

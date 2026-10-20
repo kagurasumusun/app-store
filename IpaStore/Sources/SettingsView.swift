@@ -271,7 +271,7 @@ struct AcknowledgementsView: View {
                     Text("""
                     The App Store protocol layer is an independent C++ implementation. It was written from observed request and response formats; no source code from existing tools is included.
 
-                    Sign-in uses Apple’s own SAP primitives from the system frameworks. Download metadata and FairPlay Sinf blobs stay inside the package; the app does not decrypt app code.
+                    Sign-in requests are signed by a complete in-app implementation of Apple’s SAP v200 protocol — pure software, no private frameworks, so it runs the same on device and in the Simulator. Download metadata and FairPlay Sinf blobs stay inside the package; the app does not decrypt app code.
 
                     The OTA manifest, the HTTP parser, the range/file serving logic and the X.509 encoder are part of the same C++ core and are covered by the portable test suite.
                     """)

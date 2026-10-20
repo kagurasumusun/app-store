@@ -59,6 +59,20 @@ struct AppArtwork: View {
     }
 }
 
+/// Human-readable name for the platform identifiers the core reports
+/// ("iphone", "appletv", "visionos", …).
+func platformDisplayName(_ identifier: String) -> String {
+    switch identifier.lowercased() {
+    case "iphone", "iphoneos": return "iPhone"
+    case "ipad", "ipados": return "iPad"
+    case "mac", "macos": return "Mac"
+    case "appletv", "tvos": return "tvOS"
+    case "watch", "watchos": return "watchOS"
+    case "xros", "vision", "visionos": return "visionOS"
+    default: return identifier
+    }
+}
+
 struct PlatformChip: View {
     let title: String
     var highlighted = false
