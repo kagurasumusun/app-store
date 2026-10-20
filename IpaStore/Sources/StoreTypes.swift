@@ -235,6 +235,11 @@ struct StoreApp: Identifiable, Hashable {
     }
 }
 
+// The Objective-C handle is populated by the bridge initializer and is
+// read-only afterwards, so sharing a StoreApp across isolation domains
+// cannot race.
+extension StoreApp: @unchecked Sendable {}
+
 struct StoreReview: Identifiable, Hashable {
     let reviewID: String
     let author: String
