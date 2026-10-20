@@ -154,7 +154,7 @@ struct SettingsView: View {
                         }
                         Spacer()
                         Button {
-                            model.wishlist.removeAll { $0.appID == entry.appID }
+                            model.removeWishlist(appID: entry.appID)
                         } label: {
                             Image(systemName: "star.slash")
                                 .foregroundStyle(.secondary)

@@ -17,6 +17,8 @@ struct InstallSheet: View {
                 statusSection
                 if service.installURL != nil {
                     installSection
+                } else {
+                    packageSection
                 }
                 certificateSection
                 diagnosticsSection
@@ -38,6 +40,8 @@ struct InstallSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+        .interactiveDismissDisabled(service.phase.isBusy)
+        .onDisappear { service.stop() }
     }
 
     private var statusSection: some View {
@@ -111,6 +115,23 @@ struct InstallSheet: View {
         }
     }
 
+    private var packageSection: some View {
+        Section {
+            Text("No package is queued yet.")
+                .font(.subheadline)
+            Button {
+                service.isPresented = false
+                model.selectedTab = .library
+            } label: {
+                Label("Choose a package in Library", systemImage: "square.stack.3d.up.fill")
+            }
+        } header: {
+            Text("Package")
+        } footer: {
+            Text("Downloads appear in the Library. Open one, tap Install, and the local server starts for that exact build.")
+        }
+    }
+
     private var certificateSection: some View {
         Section {
             HStack {
@@ -157,8 +178,8 @@ struct InstallSheet: View {
 
     private var diagnosticsSection: some View {
         Section("Diagnostics") {
-            if let manifestURL = service.installURL {
-                InfoRow(label: "Manifest", value: manifestURL.absoluteString)
+            if let installURL = service.installURL {
+                InfoRow(label: "Install", value: installURL.absoluteString)
                     .font(.caption2)
             }
             if let pageURL = service.pageURL {

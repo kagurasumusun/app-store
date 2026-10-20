@@ -201,7 +201,7 @@ IpaStore/
   Resources/          アプリアイコン、インストール用アイコン、PrivacyInfo
   IpaStore-Bridging-Header.h
 Config/               Info.plist / entitlements
-Scripts/              build_core.sh / generate_xcodeproj.py
+Scripts/              build_core.sh / generate_xcodeproj.py / check_static.sh
 ThirdParty/miniz/     vendored miniz 3.0.2
 docs/                 アーキテクチャ・プロトコル・テスト・インストール手順
 reference/            参照用リポジトリ（ビルド対象外・コピー禁止）
