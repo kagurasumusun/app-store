@@ -155,7 +155,7 @@ def build_settings(target: bool, release: bool) -> str:
         "MTL_FAST_MATH": "YES",
         "SDKROOT": "iphoneos",
         "SWIFT_STRICT_CONCURRENCY": "minimal",
-        "SWIFT_VERSION": "5.0",
+        "SWIFT_VERSION": "6.0",
     }
 
     if target:
