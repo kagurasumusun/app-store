@@ -17,9 +17,11 @@ constexpr std::string_view kEcdsaWithSha256 =
     "1.2.840.10045.4.3.2";
 constexpr std::string_view kEcPublicKey = "1.2.840.10045.2.1";
 constexpr std::string_view kPrime256v1 = "1.2.840.10045.3.1.7";
+constexpr std::string_view kSubjectKeyId = "2.5.29.14";
 constexpr std::string_view kKeyUsage = "2.5.29.15";
 constexpr std::string_view kSubjectAltName = "2.5.29.17";
 constexpr std::string_view kBasicConstraints = "2.5.29.19";
+constexpr std::string_view kAuthorityKeyId = "2.5.29.35";
 constexpr std::string_view kExtendedKeyUsage = "2.5.29.37";
 constexpr std::string_view kCommonName = "2.5.4.3";
 constexpr std::string_view kCountry = "2.5.4.6";
@@ -120,7 +122,11 @@ Bytes time_value(std::time_t value) {
 
 Bytes algorithm_identifier() {
   auto oid = der_object_identifier(kEcdsaWithSha256);
-  return sequence({oid.value(), der_integer(0)});
+  // RFC 5758 section 3.2: the parameters of ecdsa-with-SHA256 "MUST be
+  // absent". An earlier version appended INTEGER 0 here, which made every
+  // generated certificate unusable with strict parsers (including Apple's
+  // trust evaluation) even though lenient ones still decoded it.
+  return sequence({oid.value()});
 }
 
 Result<Bytes> name_der(const CertificateName& name) {
@@ -155,6 +161,57 @@ Bytes extension(std::string_view oid, bool critical, const Bytes& value) {
   if (critical) parts.push_back(boolean_value(true));
   parts.push_back(octet_string(value));
   return sequence(parts);
+}
+
+// DER BIT STRING for KeyUsage with a correct unused-bits count (bits are
+// numbered as in RFC 5280: digitalSignature=0, keyCertSign=5, cRLSign=6).
+Bytes key_usage_value(std::initializer_list<int> bits) {
+  int highest = 0;
+  for (int bit : bits) highest = std::max(highest, bit);
+  const std::size_t octets = static_cast<std::size_t>(highest / 8) + 1;
+  Bytes content;
+  content.push_back(static_cast<std::uint8_t>(octets * 8 - highest - 1));
+  content.resize(1 + octets, 0x00);
+  for (int bit : bits) {
+    content[1 + static_cast<std::size_t>(bit / 8)] |=
+        static_cast<std::uint8_t>(0x80 >> (bit % 8));
+  }
+  return wrap(0x03, content);
+}
+
+// DER INTEGER for a fixed-width unsigned magnitude (an ECDSA r/s value):
+// leading zeros are stripped, and one is re-added when the value would
+// otherwise look negative.
+Bytes der_unsigned_integer(const std::uint8_t* data, std::size_t size) {
+  if (size == 0) return wrap(0x02, Bytes{0x00});
+  while (size > 1 && data[0] == 0x00) {
+    ++data;
+    --size;
+  }
+  Bytes content;
+  if ((data[0] & 0x80) != 0) content.push_back(0x00);
+  content.insert(content.end(), data, data + size);
+  return wrap(0x02, content);
+}
+
+// Subject key identifier derived from the SPKI the caller already built.
+// A parse failure simply omits SKID/AKID: both only guide path building
+// and must never fail an otherwise valid certificate.
+Bytes subject_key_id(const Bytes& spki) {
+  std::size_t offset = 0;
+  auto outer = der_read_element(spki, offset);
+  if (!outer || outer.value().tag != 0x30) return {};
+  std::size_t inner = 0;
+  auto algorithm = der_read_element(outer.value().content, inner);
+  if (!algorithm) return {};
+  auto key = der_read_element(outer.value().content, inner);
+  if (!key || key.value().tag != 0x03 || key.value().content.size() != 66 ||
+      key.value().content.front() != 0x00) {
+    return {};
+  }
+  const Bytes point(key.value().content.begin() + 1,
+                    key.value().content.end());
+  return ec_key_identifier(point);
 }
 
 }  // namespace
@@ -298,18 +355,14 @@ Result<Bytes> build_ec_certificate(const CertificateOptions& options,
   if (options.is_ca) {
     extensions.push_back(
         extension(kBasicConstraints, true, sequence({boolean_value(true)})));
-    Bytes key_usage;
-    // digitalSignature (bit 0) + keyCertSign (bit 5) + cRLSign (bit 6)
-    key_usage.push_back(0x00);
-    key_usage.push_back(static_cast<std::uint8_t>(0x86));
-    extensions.push_back(extension(kKeyUsage, true, wrap(0x03, key_usage)));
-  } else {
+    // digitalSignature (0) + keyCertSign (5) + cRLSign (6)
     extensions.push_back(
-        extension(kBasicConstraints, true, sequence({boolean_value(false)})));
-    Bytes key_usage;
-    key_usage.push_back(0x00);
-    key_usage.push_back(static_cast<std::uint8_t>(0x80));
-    extensions.push_back(extension(kKeyUsage, true, wrap(0x03, key_usage)));
+        extension(kKeyUsage, true, key_usage_value({0, 5, 6})));
+  } else {
+    // cA defaults to FALSE and DER forbids encoding a DEFAULT value, so a
+    // leaf carries an empty sequence instead of BOOLEAN FALSE.
+    extensions.push_back(extension(kBasicConstraints, true, sequence({})));
+    extensions.push_back(extension(kKeyUsage, true, key_usage_value({0})));
     auto server_auth = der_object_identifier(kServerAuth);
     extensions.push_back(
         extension(kExtendedKeyUsage, false, sequence({server_auth.value()})));
@@ -331,6 +384,17 @@ Result<Bytes> build_ec_certificate(const CertificateOptions& options,
       }
       extensions.push_back(
           extension(kSubjectAltName, false, wrap(0x30, content)));
+    }
+  }
+  const Bytes skid = subject_key_id(subject_public_key_info);
+  if (!skid.empty()) {
+    extensions.push_back(extension(kSubjectKeyId, false, octet_string(skid)));
+    Bytes akid = options.authority_key_id;
+    if (akid.empty() && issuer.value() == subject.value()) akid = skid;
+    if (!akid.empty()) {
+      // [0] IMPLICIT KeyIdentifier
+      extensions.push_back(
+          extension(kAuthorityKeyId, false, sequence({wrap(0x80, akid)})));
     }
   }
 
@@ -357,6 +421,22 @@ Result<Bytes> build_ec_certificate(const CertificateOptions& options,
     return make_error(ErrorCode::kInternal, "signer returned an empty signature");
   }
   return sequence({tbs, signature_algorithm, bit_string(signature.value())});
+}
+
+Bytes ec_key_identifier(const Bytes& uncompressed_point) {
+  const auto digest =
+      sha256(uncompressed_point.data(), uncompressed_point.size());
+  return Bytes(digest.begin(), digest.begin() + 20);
+}
+
+Result<Bytes> ecdsa_signature_p1363_to_der(const Bytes& p1363) {
+  if (p1363.empty() || (p1363.size() % 2) != 0) {
+    return make_error(ErrorCode::kInvalidArgument,
+                      "P1363 signature must be two equal-width components");
+  }
+  const std::size_t half = p1363.size() / 2;
+  return sequence({der_unsigned_integer(p1363.data(), half),
+                   der_unsigned_integer(p1363.data() + half, half)});
 }
 
 std::string pem_encode(const Bytes& der, std::string_view label) {

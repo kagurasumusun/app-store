@@ -2560,6 +2560,7 @@ void test_x509(const std::string& fixtures) {
       SubjectAltName{"", std::vector<std::uint8_t>{127, 0, 0, 1}});
   leaf.alt_names.push_back(
       SubjectAltName{"", std::vector<std::uint8_t>{192, 168, 1, 5}});
+  leaf.authority_key_id = ec_key_identifier(point);
   auto leaf_der = build_ec_certificate(leaf, spki.value(), test_signature);
   expect(leaf_der.has_value(), "leaf certificate built");
   if (!leaf_der) return;
@@ -2581,6 +2582,93 @@ void test_x509(const std::string& fixtures) {
   expect(der_text.find(std::string("\x30\x06\x02\x01\x01\x02\x01\x01", 8)) !=
              std::string::npos,
          "signature embedded");
+
+  const std::string ca_text(
+      reinterpret_cast<const char*>(ca_der.value().data()),
+      ca_der.value().size());
+  const auto count_occurrences = [](const std::string& haystack,
+                                    const std::string& needle) {
+    std::size_t count = 0;
+    std::size_t pos = 0;
+    while ((pos = haystack.find(needle, pos)) != std::string::npos) {
+      ++count;
+      ++pos;
+    }
+    return count;
+  };
+
+  // ecdsa-with-SHA256 with parameters ABSENT (RFC 5758 section 3.2) appears
+  // exactly twice (TBS + outer). A previous form appended INTEGER 0 as the
+  // parameters, which strict parsers reject; make sure it never comes back.
+  const std::string algid("\x30\x0a\x06\x08\x2a\x86\x48\xce\x3d\x04\x03\x02", 12);
+  expect_eq(count_occurrences(ca_text, algid), std::size_t{2},
+            "CA algId has no parameters");
+  expect_eq(count_occurrences(der_text, algid), std::size_t{2},
+            "leaf algId has no parameters");
+  const std::string bad_algid(
+      "\x30\x0d\x06\x08\x2a\x86\x48\xce\x3d\x04\x03\x02\x02\x01\x00", 15);
+  expect(ca_text.find(bad_algid) == std::string::npos,
+         "CA algId is not the broken parameterized form");
+
+  // Basic constraints: the CA carries BOOLEAN TRUE, a leaf carries the
+  // empty sequence (DER forbids encoding DEFAULT FALSE explicitly).
+  expect(ca_text.find(std::string(
+             "\x06\x03\x55\x1d\x13\x01\x01\xff\x04\x05\x30\x03\x01\x01\xff",
+             15)) != std::string::npos,
+         "CA basic constraints CA:TRUE");
+  expect(der_text.find(std::string(
+             "\x06\x03\x55\x1d\x13\x01\x01\xff\x04\x02\x30\x00", 12)) !=
+             std::string::npos,
+         "leaf basic constraints is the empty sequence");
+
+  // Key usage as minimized BIT STRINGs (unused-bits count included).
+  expect(ca_text.find(std::string(
+             "\x06\x03\x55\x1d\x0f\x01\x01\xff\x04\x04\x03\x02\x01\x86",
+             14)) != std::string::npos,
+         "CA key usage digitalSignature+keyCertSign+cRLSign");
+  expect(der_text.find(std::string(
+             "\x06\x03\x55\x1d\x0f\x01\x01\xff\x04\x04\x03\x02\x07\x80",
+             14)) != std::string::npos,
+         "leaf key usage digitalSignature");
+
+  // Subject/authority key identifiers derived from the public point.
+  const Bytes key_id = ec_key_identifier(point);
+  expect_eq(key_id.size(), std::size_t{20}, "key identifier length");
+  const std::string key_id_text(
+      reinterpret_cast<const char*>(key_id.data()), key_id.size());
+  expect(ca_text.find(std::string("\x06\x03\x55\x1d\x0e", 5)) !=
+             std::string::npos,
+         "CA carries SKID");
+  expect(ca_text.find(std::string("\x06\x03\x55\x1d\x23", 5)) !=
+             std::string::npos,
+         "self-signed CA carries AKID");
+  expect(count_occurrences(ca_text, key_id_text) >= 2,
+         "CA key id appears as SKID and AKID");
+  expect(count_occurrences(der_text, key_id_text) >= 2,
+         "leaf embeds the authority key id");
+
+  // P1363 to DER: r = 1, s = all ones (the high bit forces a sign pad).
+  Bytes p1363(64, 0x00);
+  p1363[31] = 0x01;
+  for (std::size_t i = 32; i < 64; ++i) p1363[i] = 0xff;
+  auto der_sig = ecdsa_signature_p1363_to_der(p1363);
+  expect(der_sig.has_value(), "P1363 signature converts");
+  if (der_sig) {
+    Bytes expected = {0x30, 0x26, 0x02, 0x01, 0x01, 0x02, 0x21, 0x00};
+    expected.insert(expected.end(), 32, 0xff);
+    expect_bytes(der_sig.value(), expected, "P1363 to DER known answer");
+  }
+  auto zero_sig = ecdsa_signature_p1363_to_der(Bytes(64, 0x00));
+  expect(zero_sig.has_value(), "zero P1363 converts");
+  if (zero_sig) {
+    expect_bytes(zero_sig.value(),
+                 (Bytes{0x30, 0x06, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00}),
+                 "zero P1363 known answer");
+  }
+  expect(!ecdsa_signature_p1363_to_der({}).has_value(),
+         "empty P1363 rejected");
+  expect(!ecdsa_signature_p1363_to_der({0x01, 0x02, 0x03}).has_value(),
+         "odd-length P1363 rejected");
 
   std::size_t offset = 0;
   auto root = der_read_element(leaf_der.value(), offset);

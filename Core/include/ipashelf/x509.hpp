@@ -48,6 +48,10 @@ struct CertificateOptions {
   /// Seconds since the Unix epoch. Zero means "now".
   std::time_t not_before = 0;
   std::uint64_t validity_seconds = 10ULL * 365 * 24 * 60 * 60;
+  /// Authority key identifier to embed (the issuer's key identifier; see
+  /// `ec_key_identifier`). Empty omits the AKID extension, except that a
+  /// self-signed certificate reuses its own subject key identifier.
+  Bytes authority_key_id;
 };
 
 /// DER signature (ECDSA-Sig-Value) for the given TBSCertificate.
@@ -61,6 +65,19 @@ using CertificateSigner = std::function<Result<Bytes>(const Bytes& tbs)>;
 [[nodiscard]] Result<Bytes> build_ec_certificate(
     const CertificateOptions& options, const Bytes& subject_public_key_info,
     const CertificateSigner& signer);
+
+/// 20-byte key identifier for a P-256 public point: the leading bytes of the
+/// SHA-256 of the uncompressed point, following the "hash of the public key"
+/// method of RFC 5280 section 4.2.1.2. Used for SKID/AKID.
+[[nodiscard]] Bytes ec_key_identifier(const Bytes& uncompressed_point);
+
+/// Converts an IEEE P1363 ECDSA signature (`r || s`, fixed width — what
+/// `SecKeyCreateSignature` and the Secure Enclave produce) into the DER
+/// ECDSA-Sig-Value X.509 expects. Platform keys never emit DER signatures,
+/// so a `CertificateSigner` backed by one must pass its output through here;
+/// feeding P1363 bytes into `build_ec_certificate` silently produces
+/// certificates no verifier accepts.
+[[nodiscard]] Result<Bytes> ecdsa_signature_p1363_to_der(const Bytes& p1363);
 
 /// PEM (`-----BEGIN CERTIFICATE-----`) encoding of a DER certificate.
 [[nodiscard]] std::string pem_encode(const Bytes& der,
