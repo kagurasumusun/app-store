@@ -100,13 +100,20 @@ std::chrono::seconds parse_retry_after(std::string_view value) {
 
 Result<PlistValue> decode_plist_response(const HttpResponse& response) {
   if (response.body.empty()) {
-    return make_error(ErrorCode::kParse, "Apple returned an empty response");
+    return make_error(ErrorCode::kParse,
+                      "Apple returned an empty response (HTTP " +
+                          std::to_string(response.status) +
+                          ") - unsigned requests are rejected by Apple");
   }
   auto plist = PlistValue::parse(response.body);
   if (!plist) {
-    return make_error(ErrorCode::kParse,
-                      "Apple returned a non-property-list response (HTTP " +
-                          std::to_string(response.status) + ")");
+    std::string preview(response.body.begin(),
+                        response.body.begin() +
+                            std::min(response.body.size(), std::size_t(128)));
+    return make_error(
+        ErrorCode::kParse,
+        "Apple returned a non-property-list response (HTTP " +
+            std::to_string(response.status) + "): " + preview);
   }
   return plist;
 }
