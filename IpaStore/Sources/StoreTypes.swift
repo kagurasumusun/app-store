@@ -320,6 +320,10 @@ struct StoreAccount: Identifiable, Hashable {
     }
 }
 
+// Same reasoning as StoreApp: the bridge writes the handle's fields in its
+// initializer and never mutates them afterwards.
+extension StoreAccount: @unchecked Sendable {}
+
 // MARK: - Search
 
 enum SearchSort: String, CaseIterable, Identifiable {
