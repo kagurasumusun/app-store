@@ -23,8 +23,6 @@ constexpr std::string_view kPurchasePath =
     "/WebObjects/MZFinance.woa/wa/buyProduct";
 constexpr std::string_view kVolumePath =
     "/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct";
-constexpr std::string_view kRedownloadPath = "/r/redownload";
-constexpr std::string_view kUpdatePath = "/up/updateProduct";
 
 constexpr std::string_view kBadLoginMessage =
     "MZFinance.BadLogin.Configurator_message";
