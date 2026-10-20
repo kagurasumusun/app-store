@@ -132,6 +132,15 @@ wait "$launch_pid" 2>/dev/null
 set -e
 
 cat "$SMOKE_LOG"
+# Surface the individual checks through the Checks API; the raw log is only
+# reachable from the Actions log viewer.
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+  while IFS= read -r line; do
+    case "$line" in
+      SMOKE:*) echo "::notice::$line" ;;
+    esac
+  done <"$SMOKE_LOG"
+fi
 if ! grep -q "SMOKE: PASS" "$SMOKE_LOG"; then
   fail "the in-app smoke test did not report SMOKE: PASS"
 fi

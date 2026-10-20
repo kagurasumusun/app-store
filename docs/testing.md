@@ -1,16 +1,19 @@
 # テスト
 
-IPAShelf のテストは 3 層に分かれています。
+IPAShelf のテストは 4 層に分かれています。
 
 | 層 | コマンド | 内容 |
 | --- | --- | --- |
 | コア | `bash Scripts/build_core.sh` | C++ の 362 チェック + 外部ツールによる検証 |
 | 静的 | `bash Scripts/check_static.sh` | Swift 構文、Objective-C ブリッジ API、pbxproj、括弧 |
+| 実行時 | `bash Scripts/smoke_test.sh` | シミュレータでの起動 + アプリ内スモークテスト |
 | 手動 | `docs/testing.md` のチェックリスト | 実機でのサインイン・ダウンロード・インストール |
 
 ```bash
 bash Scripts/build_core.sh
 bash Scripts/check_static.sh
+bash Scripts/build_app.sh --simulator
+bash Scripts/smoke_test.sh
 ```
 
 サニタイザ付き:

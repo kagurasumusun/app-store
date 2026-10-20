@@ -116,13 +116,26 @@ openssl PEM validation: ok
 | plist / IPA | Python `plistlib` による再パース | ✅ |
 | OTA マニフェスト | `plistlib` で構造検証 | ✅ |
 | X.509 / SPKI | `openssl x509` / `openssl pkey` で DER を解析 | ✅ |
-| Xcode プロジェクト | `pbxproj` ライブラリでパース | ✅ |
-| Swift 15 ファイル | tree-sitter-swift による構文解析 | ✅ エラー 0 |
-| ブリッジ API | Swift の呼び出しと ObjC セレクタの照合 | ✅ 13 箇所一致 |
-| ObjC++ 10 ファイル | 目視レビュー + 括弧バランス検査 | ⚠️ Xcode 未ビルド |
+| Xcode プロジェクト | `pbxproj` ライブラリでパース + 参照解決 | ✅ 71 参照すべて解決 |
+| Swift 16 ファイル | tree-sitter-swift による構文解析 | ✅ エラー 0 |
+| ブリッジ API | Swift の呼び出しと ObjC セレクタの照合 | ✅ 16 箇所一致 |
+| ObjC++ 7 ファイル | Xcode 27（iOS 27 SDK）で実コンパイル | ✅ |
+| シミュレータ | 起動 + アプリ内スモークテスト | ✅ 14/14 チェック |
 
-**Swift / Objective-C++ 層はまだ Xcode でコンパイルされていません。**
-初回ビルド時に importer 名や nullability の微調整が必要になる可能性があります。
+GitHub Actions の `apple` ジョブは macOS 27 / Xcode 27 上で次を実行します。
+
+1. `Scripts/build_app.sh --simulator`（Debug）
+2. `Scripts/build_app.sh --device`（arm64、署名なし）
+3. `Scripts/build_app.sh --simulator --configuration Release`
+4. バンドル検査（Info.plist、`nm` による ObjC++ シンボル、`lipo`）
+5. `Scripts/smoke_test.sh`（シミュレータで起動 + アプリ内スモークテスト）
+
+`smoke_test.sh` はアプリをシミュレータにインストールし、UI が起動した
+ままであることを確認してスクリーンショットを保存したあと、
+`-IPSmokeTest` 付きで再起動します。アプリ側（`SmokeTest.swift`）は
+Keychain を使ったルート CA の生成、平文 HTTP と TLS のリスナー起動、
+`/`・`/ca.cer`・`/install.plist`・`/payload.ipa` の取得までを実行し、
+`SMOKE: PASS` を出力して終了します。
 
 ---
 
@@ -213,6 +226,7 @@ reference/            参照用リポジトリ（ビルド対象外・コピー�
 
 ```bash
 bash Scripts/build_core.sh            # 362 チェック + plistlib + openssl
+bash Scripts/check_static.sh          # Swift 構文 + ブリッジ + pbxproj
 SANITIZE=1 bash Scripts/build_core.sh # ASan/UBSan 付き
 bash Scripts/check_static.sh          # Swift 構文・ブリッジ API・pbxproj
 ```
