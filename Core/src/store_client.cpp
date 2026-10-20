@@ -4,9 +4,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <limits>
+#include <mutex>
 #include <thread>
+#include <unordered_map>
 
 #include "ipashelf/crypto.hpp"
 #include "ipashelf/json.hpp"
@@ -210,6 +213,67 @@ std::chrono::seconds parse_retry_after(
     return std::chrono::seconds(0);
   }
   return std::chrono::seconds(0);
+}
+
+// ---------------------------------------------------------------------------
+// Catalog pin cache
+//
+// The catalog lookup only pins the newest build per platform; it is
+// advisory, so identical lookups should reuse one answer instead of
+// hammering a rate-limited endpoint. Failed lookups are never cached, and
+// entries expire quickly — "latest" drifting by a few minutes within a
+// session is harmless because a cached identifier still names a real build
+// and downloads are revalidated against the package itself.
+// ---------------------------------------------------------------------------
+
+struct CatalogCacheEntry {
+  std::string version;
+  std::chrono::steady_clock::time_point stored_at;
+};
+
+constexpr auto kCatalogCacheLifetime = std::chrono::minutes(10);
+constexpr std::size_t kCatalogCacheLimit = 128;
+
+std::mutex& catalog_cache_mutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::unordered_map<std::string, CatalogCacheEntry>& catalog_cache() {
+  static std::unordered_map<std::string, CatalogCacheEntry> cache;
+  return cache;
+}
+
+std::optional<std::string> cached_catalog_version(std::string_view key) {
+  const std::scoped_lock lock(catalog_cache_mutex());
+  auto& cache = catalog_cache();
+  const auto entry = cache.find(std::string(key));
+  if (entry == cache.end()) return std::nullopt;
+  if (std::chrono::steady_clock::now() - entry->second.stored_at >
+      kCatalogCacheLifetime) {
+    cache.erase(entry);
+    return std::nullopt;
+  }
+  return entry->second.version;
+}
+
+void store_catalog_version(std::string_view key, std::string_view version) {
+  const std::scoped_lock lock(catalog_cache_mutex());
+  auto& cache = catalog_cache();
+  if (cache.size() >= kCatalogCacheLimit && cache.count(std::string(key)) == 0) {
+    cache.clear();
+  }
+  cache[std::string(key)] = CatalogCacheEntry{
+      std::string(version), std::chrono::steady_clock::now()};
+}
+
+// A soft catalog failure says "no pin could be determined", not "the
+// download cannot work": the app may be missing from the public catalog, or
+// Apple may be rate-limiting it. Callers proceed unpinned and let the
+// download-response and package checks decide.
+bool catalog_failure_allows_unpinned(const Error& error) {
+  return error.code == ErrorCode::kAppNotFound ||
+         error.code == ErrorCode::kTemporarilyUnavailable;
 }
 
 Result<PlistValue> decode_plist_response(const HttpResponse& response) {
@@ -1156,6 +1220,12 @@ Result<std::string> StoreClient::latest_external_version_id(
   auto catalog = catalog_platform(platform);
   if (!catalog) return catalog.error();
   const std::string country = region_or_default(region);
+  const std::string cache_key = std::to_string(app.id) + "|" + country +
+                                "|" + std::string(catalog.value());
+  if (auto cached = cached_catalog_version(cache_key)) {
+    return cached.value();
+  }
+
   const std::string url = "https://apps.apple.com/api/apps/v1/catalog/" +
                           percent_encode(country) + "/apps/" +
                           std::to_string(app.id) + "?platform=" +
@@ -1165,17 +1235,52 @@ Result<std::string> StoreClient::latest_external_version_id(
   request.url = url;
   request.headers.set("Accept", "application/json");
   request.headers.set("User-Agent", configuration_.user_agent);
-  auto response = transport_.send(request, token);
-  if (!response) return response.error();
-  if (response.value().status == 404) {
+
+  // The catalog endpoint rate-limits aggressively. A couple of retries
+  // that respect Retry-After usually get a pin; failing that, the callers
+  // treat the lookup as advisory and continue unpinned.
+  constexpr int kCatalogAttempts = 3;
+  constexpr auto kCatalogMaxWait = std::chrono::seconds(30);
+  std::optional<HttpResponse> response;
+  for (int attempt = 0; attempt < kCatalogAttempts; ++attempt) {
+    auto result = transport_.send(request, token);
+    if (!result) return result.error();
+    response = std::move(result).value();
+    const int status = response.value().status;
+    const bool throttled = status == 429 || status == 503;
+    if (!throttled || attempt + 1 >= kCatalogAttempts || token.cancelled()) {
+      break;
+    }
+    auto delay = parse_retry_after(response.value().header("Retry-After"),
+                                   std::chrono::system_clock::now());
+    if (delay.count() <= 0) {
+      delay = attempt == 0 ? std::chrono::seconds(3)
+                           : std::chrono::seconds(8);
+    }
+    configuration_.sleep(std::min(delay, kCatalogMaxWait));
+  }
+
+  const int status = response.value().status;
+  if (status == 404) {
     return Error{ErrorCode::kAppNotFound,
                  "app is not present in the public catalog", 404};
   }
-  if (response.value().status != 200) {
+  if (status == 429) {
+    return Error{ErrorCode::kTemporarilyUnavailable,
+                 "Apple is rate-limiting catalog lookups (HTTP 429); try "
+                 "again in a minute",
+                 429};
+  }
+  if (status == 503) {
+    return Error{ErrorCode::kTemporarilyUnavailable,
+                 "Apple's catalog is temporarily unavailable (HTTP 503); "
+                 "try again shortly",
+                 503};
+  }
+  if (status != 200) {
     return Error{ErrorCode::kHttpStatus,
-                 "catalog lookup returned HTTP " +
-                     std::to_string(response.value().status),
-                 response.value().status};
+                 "catalog lookup returned HTTP " + std::to_string(status),
+                 status};
   }
   auto document = Json::parse(std::string_view(
       reinterpret_cast<const char*>(response.value().body.data()),
@@ -1247,6 +1352,7 @@ Result<std::string> StoreClient::latest_external_version_id(
     return make_error(ErrorCode::kParse,
                       "catalog response has an invalid external version id");
   }
+  store_catalog_version(cache_key, version);
   return version;
 }
 
@@ -1727,12 +1833,17 @@ Result<DownloadOffer> StoreClient::send_download_product(
   std::string version(external_version_id);
 
   // An unpinned request can return the iOS build of a universal app.
-  // Select the Mac offer before accepting any download response.
+  // Select the Mac offer before accepting any download response. A soft
+  // catalog failure (delisted app, rate limit) proceeds unpinned instead
+  // of failing the download; the returned package is validated later.
   if (version.empty() && platform == Platform::kMacOS) {
     auto latest =
         latest_external_version_id(app, account.region, platform, token);
-    if (!latest) return latest.error();
-    version = latest.value();
+    if (latest) {
+      version = latest.value();
+    } else if (!catalog_failure_allows_unpinned(latest.error())) {
+      return latest.error();
+    }
   }
 
   // Prefer ent/download when its generator and bag endpoint are available.
@@ -1817,9 +1928,10 @@ Result<DownloadOffer> StoreClient::send_download_product(
     auto latest = latest_external_version_id(app, account.region,
                                              pinned_platform, token);
     if (!latest) {
-      if (latest.error().code == ErrorCode::kAppNotFound) {
-        // A delisted app can still be available to this account. Try once
-        // without a version; the caller validates the package platform.
+      if (catalog_failure_allows_unpinned(latest.error())) {
+        // A delisted or catalog-throttled app can still be available to
+        // this account. Try once without a version; the caller validates
+        // the package platform.
         auto unpinned = legacy_request(bag->redownload_endpoint,
                                        "appExtVrsId", "");
         if (!unpinned) return unpinned.error();
@@ -1875,11 +1987,15 @@ Result<DownloadOffer> StoreClient::download_offer(
     auto latest =
         latest_external_version_id(app, account.region, platform, token);
     // Delisted tvOS apps may have no catalog offer but still be available
-    // for redownload; the returned package platform is validated later.
-    const bool missing_tv_offer =
-        platform == Platform::kAppleTV &&
-        latest.error().code == ErrorCode::kAppNotFound;
-    if (!latest && !missing_tv_offer) return latest.error();
+    // for redownload; a rate-limited catalog should not block any of the
+    // non-iOS platforms either. The returned package platform is
+    // validated later.
+    const bool may_be_unpinned =
+        !latest &&
+        ((platform == Platform::kAppleTV &&
+          latest.error().code == ErrorCode::kAppNotFound) ||
+         latest.error().code == ErrorCode::kTemporarilyUnavailable);
+    if (!latest && !may_be_unpinned) return latest.error();
     if (latest) version = latest.value();
   }
   return send_download_product(account, app, hardware.value(), version,
@@ -1999,8 +2115,11 @@ Result<AppVersions> StoreClient::version_list(
       platform == Platform::kVisionOS || platform == Platform::kMacOS) {
     auto latest =
         latest_external_version_id(app, account.region, platform, token);
-    if (!latest) return latest.error();
-    version = latest.value();
+    if (latest) {
+      version = latest.value();
+    } else if (!catalog_failure_allows_unpinned(latest.error())) {
+      return latest.error();
+    }
   }
 
   auto offer = send_download_product(account, app, hardware.value(), version,

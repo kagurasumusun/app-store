@@ -897,6 +897,128 @@ void test_latest_external_version() {
   }
 }
 
+void test_catalog_throttling() {
+  using namespace ipashelf;
+  FakeTransport transport;
+  StoreConfiguration configuration;
+  std::vector<long long> waits;
+  configuration.sleep = [&waits](std::chrono::milliseconds duration) {
+    waits.push_back(static_cast<long long>(duration.count()));
+  };
+  StoreClient client(transport, configuration);
+  CancellationSource source;
+
+  // Distinct app ids keep the process-wide catalog cache from leaking
+  // between tests.
+  App app;
+  app.id = 987654321;
+  app.bundle_id = "com.example.sample";
+
+  // Throttled twice, then through: Retry-After is honoured first, the
+  // default backoff second, and the third attempt succeeds.
+  HttpHeaders retry_headers;
+  retry_headers.set("Retry-After", "2");
+  transport.enqueue_response(429, "", retry_headers);
+  transport.enqueue_response(429, "");
+  transport.enqueue_response(200, catalog_json(app.id, "9100"));
+  auto version = client.latest_external_version_id(app, "jp",
+                                                  Platform::kIPhone,
+                                                  source.token());
+  expect(version.has_value(), "catalog succeeds after throttling");
+  if (version) {
+    expect_eq(version.value(), std::string("9100"), "throttled version id");
+  }
+  expect_eq(waits.size(), std::size_t{2}, "two throttled waits");
+  if (waits.size() == 2) {
+    expect_eq(waits[0], 2000LL, "Retry-After honoured");
+    expect_eq(waits[1], 8000LL, "default backoff");
+  }
+
+  // A repeat lookup for the same key is served from the cache without a
+  // new request.
+  const std::size_t requests_so_far = transport.requests.size();
+  auto cached = client.latest_external_version_id(app, "jp",
+                                                  Platform::kIPhone,
+                                                  source.token());
+  expect(cached.has_value(), "cached catalog lookup succeeds");
+  if (cached) {
+    expect_eq(cached.value(), std::string("9100"), "cached version id");
+  }
+  expect_eq(transport.requests.size(), requests_so_far,
+            "cache avoids a request");
+
+  // Persistent throttling is reported as temporarily unavailable, with the
+  // raw status preserved for diagnostics.
+  app.id = 987654322;
+  transport.enqueue_response(429, "");
+  transport.enqueue_response(429, "");
+  transport.enqueue_response(429, "");
+  auto limited = client.latest_external_version_id(app, "jp",
+                                                   Platform::kIPhone,
+                                                   source.token());
+  expect(!limited.has_value(), "persistent 429 fails");
+  if (!limited) {
+    expect(limited.error().code == ErrorCode::kTemporarilyUnavailable,
+           "429 maps to temporarily unavailable");
+    expect_eq(limited.error().http_status, 429, "429 status kept");
+  }
+}
+
+void test_download_unpinned_when_catalog_throttled() {
+  using namespace ipashelf;
+  FakeTransport transport;
+  StoreConfiguration configuration;
+  configuration.sleep = [](std::chrono::milliseconds) {};
+  StoreClient client(transport, configuration);
+  CancellationSource source;
+
+  Account account;
+  account.directory_services_id = "1";
+  account.device_id = "AABBCCDDEEFF";
+  account.region = "us";
+
+  // macOS: the pin lookup is throttled away, so the volume-store request
+  // goes out unpinned instead of failing the download.
+  App app;
+  app.id = 987654323;
+  app.bundle_id = "com.example.sample";
+  transport.enqueue_response(429, "");
+  transport.enqueue_response(429, "");
+  transport.enqueue_response(429, "");
+  transport.enqueue_plist(make_download_reply());
+  auto offer = client.download_offer(account, app, "", Platform::kMacOS,
+                                     source.token());
+  expect(offer.has_value(), "macOS download survives a throttled catalog");
+  if (offer) {
+    expect_eq(offer.value().external_version_id, std::string("9001"),
+              "throttled macOS version");
+  }
+
+  // iPhone redownload: the volume store is empty, the catalog is
+  // throttled, and the redownload still proceeds unpinned.
+  app.id = 987654324;
+  transport.requests.clear();
+  PlistValue empty = PlistValue::dictionary();
+  empty.set("songList", PlistValue::array());
+  transport.enqueue_plist(empty);
+  transport.enqueue_plist(make_bag());
+  transport.enqueue_response(429, "");
+  transport.enqueue_response(429, "");
+  transport.enqueue_response(429, "");
+  transport.enqueue_plist(make_download_reply(app.id));
+  auto redownload = client.download_offer(account, app, "",
+                                          Platform::kIPhone, source.token());
+  expect(redownload.has_value(),
+         "redownload survives a throttled catalog");
+  expect_eq(transport.requests.size(), std::size_t{6},
+            "volume, bag, throttled catalog, redownload");
+  if (transport.requests.size() == 6) {
+    expect(transport.requests[5].url.find("/r/redownload") !=
+               std::string::npos,
+           "unpinned redownload sent");
+  }
+}
+
 void test_download_offer() {
   using namespace ipashelf;
   FakeTransport transport;
@@ -3136,6 +3258,8 @@ int main(int argc, char** argv) {
   test_login_bad_password();
   test_search_and_lookup();
   test_latest_external_version();
+  test_catalog_throttling();
+  test_download_unpinned_when_catalog_throttled();
   test_download_offer();
   test_download_fallback();
   test_download_redirect_replay();
