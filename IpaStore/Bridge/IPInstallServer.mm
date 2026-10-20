@@ -886,19 +886,19 @@ struct ConnectionState {
       ^(nw_protocol_options_t tlsOptions) {
         sec_protocol_options_t tls =
             nw_tls_copy_sec_protocol_options(tlsOptions);
-        if (tls == NULL) {
+        if (tls == nil) {
           return;
         }
         sec_identity_t secIdentity = sec_identity_create(identity);
-        if (secIdentity != NULL) {
+        if (secIdentity != nil) {
+          // sec_identity_t and sec_protocol_options_t are ARC-managed
+          // objects, so no CFRelease is needed here.
           sec_protocol_options_set_local_identity(tls, secIdentity);
-          CFRelease(secIdentity);
         }
         sec_protocol_options_set_min_tls_protocol_version(
             tls, tls_protocol_version_TLSv12);
         sec_protocol_options_set_max_tls_protocol_version(
             tls, tls_protocol_version_TLSv13);
-        CFRelease(tls);
       },
       NW_PARAMETERS_DEFAULT_CONFIGURATION);
   if (parameters == NULL) {
