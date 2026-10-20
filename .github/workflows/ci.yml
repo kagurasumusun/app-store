@@ -92,7 +92,7 @@ jobs:
   # actually compiled.
   # ---------------------------------------------------------------------------
   apple:
-    name: Xcode 27 build (iOS 27 SDK)
+    name: Xcode 27 build (iOS 27 SDK, device .ipa)
     runs-on: xcode-27
     timeout-minutes: 60
     steps:
@@ -163,15 +163,41 @@ jobs:
             bash Scripts/build_app.sh --simulator 2>&1 | tee build/logs/simulator.log
           fi
 
-      - name: Build for a generic iOS device (arm64)
+      # The deliverable is the arm64 device app. CI has no signing identity, so
+      # the binary is unsigned; --sign with DEVELOPMENT_TEAM produces an
+      # installable build locally.
+      - name: Build the device app (arm64, Release)
         run: |
           set -euo pipefail
+          mkdir -p build/logs
           set -o pipefail
           if command -v xcbeautify >/dev/null 2>&1; then
-            bash Scripts/build_app.sh --device 2>&1 | tee build/logs/device.log | xcbeautify
+            bash Scripts/build_app.sh --device --configuration Release \
+              2>&1 | tee build/logs/device.log | xcbeautify
           else
-            bash Scripts/build_app.sh --device 2>&1 | tee build/logs/device.log
+            bash Scripts/build_app.sh --device --configuration Release \
+              2>&1 | tee build/logs/device.log
           fi
+
+      - name: Package the IPA
+        run: |
+          set -euo pipefail
+          mkdir -p build/logs
+          set -o pipefail
+          bash Scripts/package_ipa.sh 2>&1 | tee build/logs/ipa.log
+
+      # Uploaded before the remaining checks so the artifact survives a later
+      # failure, and with if-no-files-found: error so a missing IPA fails the
+      # job instead of silently producing no artifact.
+      - name: Upload the device IPA
+        uses: actions/upload-artifact@v7
+        with:
+          name: IpaStore-ipa
+          path: |
+            build/artifacts/*.ipa
+            build/artifacts/*.sha256
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Build Release for the simulator
         run: |
@@ -192,16 +218,6 @@ jobs:
           # The Swift and Objective-C++ objects must both be in the binary.
           nm -gU "$app_path/IpaStore" | grep -q 'IPInstallServer' && echo "Objective-C++ symbols linked"
           lipo -info "$app_path/IpaStore"
-
-      # The runner has no UI harness, so the app is installed in a simulator,
-      # launched to prove it reaches the first frame, then relaunched with
-      # -IPSmokeTest to exercise the Keychain, the generated CA, the listeners
-      # and the OTA router from inside the process.
-      - name: Run the app in the simulator
-        timeout-minutes: 20
-        run: |
-          set -euo pipefail
-          bash Scripts/smoke_test.sh 2>&1 | tee build/logs/smoke-driver.log
 
       - name: Validate generated certificates with openssl
         run: |

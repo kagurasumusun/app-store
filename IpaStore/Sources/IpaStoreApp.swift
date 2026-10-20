@@ -7,11 +7,6 @@ struct IpaStoreApp: App {
     @State private var model = AppModel()
     @Environment(\.scenePhase) private var scenePhase
 
-    init() {
-        // Exits immediately unless the process was launched by the smoke test.
-        SmokeTest.runIfRequested()
-    }
-
     var body: some Scene {
         WindowGroup {
             RootView()

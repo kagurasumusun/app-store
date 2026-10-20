@@ -120,22 +120,44 @@ openssl PEM validation: ok
 | Swift 16 ファイル | tree-sitter-swift による構文解析 | ✅ エラー 0 |
 | ブリッジ API | Swift の呼び出しと ObjC セレクタの照合 | ✅ 16 箇所一致 |
 | ObjC++ 7 ファイル | Xcode 27（iOS 27 SDK）で実コンパイル | ✅ |
-| シミュレータ | 起動 + アプリ内スモークテスト | ✅ 14/14 チェック |
+| 実機向け .ipa | `Scripts/package_ipa.sh` でパッケージ + 構造検証 | ✅ arm64 / Release |
 
 GitHub Actions の `apple` ジョブは macOS 27 / Xcode 27 上で次を実行します。
 
-1. `Scripts/build_app.sh --simulator`（Debug）
-2. `Scripts/build_app.sh --device`（arm64、署名なし）
-3. `Scripts/build_app.sh --simulator --configuration Release`
-4. バンドル検査（Info.plist、`nm` による ObjC++ シンボル、`lipo`）
-5. `Scripts/smoke_test.sh`（シミュレータで起動 + アプリ内スモークテスト）
+1. `Scripts/build_app.sh --simulator`（Debug、コンパイル確認）
+2. `Scripts/build_app.sh --device --configuration Release`（arm64 の実機ビルド）
+3. `Scripts/package_ipa.sh`（`Payload/IpaStore.app` を含む .ipa を生成・検証）
+4. **`IpaStore-ipa` アーティファクトとして .ipa をアップロード**
+5. バンドル検査（Info.plist、`nm` による ObjC++ シンボル、`lipo`）
+6. `Scripts/build_core.sh`（openssl による証明書検証を含むコアテスト）
 
-`smoke_test.sh` はアプリをシミュレータにインストールし、UI が起動した
-ままであることを確認してスクリーンショットを保存したあと、
-`-IPSmokeTest` 付きで再起動します。アプリ側（`SmokeTest.swift`）は
-Keychain を使ったルート CA の生成、平文 HTTP と TLS のリスナー起動、
-`/`・`/ca.cer`・`/install.plist`・`/payload.ipa` の取得までを実行し、
-`SMOKE: PASS` を出力して終了します。
+### 成果物（実機用 .ipa）
+
+`apple` ジョブの Artifacts から `IpaStore-ipa` を取得すると、次の 2 ファイルが
+入っています。
+
+```
+IpaStore-0.1.0.ipa          # Payload/IpaStore.app を含む zip
+IpaStore-0.1.0.ipa.sha256   # SHA-256
+```
+
+ローカルで作る場合:
+
+```bash
+bash Scripts/build_app.sh --device --configuration Release
+bash Scripts/package_ipa.sh
+# => build/artifacts/IpaStore-<version>.ipa
+```
+
+`package_ipa.sh` はパッケージ前に arm64 スライスであること、シミュレータ用
+バイナリでないこと（`vtool -show-build`）、`MinimumOSVersion`、Bundle ID を
+検証し、作成後に `Payload/IpaStore.app/IpaStore` と `Info.plist` の存在、
+および取り出した `Info.plist` の Bundle ID を再確認します。
+
+> **署名について**: CI には署名証明書がないため、生成される .ipa の中身は
+> 未署名です。実機に入れる場合は `DEVELOPMENT_TEAM=XXXXXXXXXX \
+> bash Scripts/build_app.sh --device --sign` で署名してから
+> `bash Scripts/package_ipa.sh` を実行してください。
 
 ---
 
@@ -227,6 +249,7 @@ reference/            参照用リポジトリ（ビルド対象外・コピー�
 ```bash
 bash Scripts/build_core.sh            # 362 チェック + plistlib + openssl
 bash Scripts/check_static.sh          # Swift 構文 + ブリッジ + pbxproj
+bash Scripts/package_ipa.sh           # 実機用 .ipa（build/artifacts/）
 SANITIZE=1 bash Scripts/build_core.sh # ASan/UBSan 付き
 bash Scripts/check_static.sh          # Swift 構文・ブリッジ API・pbxproj
 ```

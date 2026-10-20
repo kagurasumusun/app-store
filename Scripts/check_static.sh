@@ -68,6 +68,20 @@ else
   echo "  skipped: pip install pbxproj"
 fi
 
+echo "== Shell scripts"
+shell_problems=0
+for script in Scripts/*.sh; do
+  if ! bash -n "$script"; then
+    echo "  syntax error: $script"
+    shell_problems=1
+  fi
+done
+if [ "$shell_problems" -eq 0 ]; then
+  echo "  bash -n: ok"
+else
+  status=1
+fi
+
 echo "== Xcode project references"
 python3 Scripts/check_project_refs.py || status=1
 
