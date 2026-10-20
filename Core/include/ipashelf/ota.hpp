@@ -163,6 +163,9 @@ struct OtaPackage {
   std::string icon_large_path;
   /// Absolute path of the DER-encoded root certificate, when one is served.
   std::string certificate_path;
+  /// In-memory `.mobileconfig` profile embedding the root certificate, when
+  /// one should be served over plain HTTP for the user to install.
+  std::string profile_data;
   std::uint64_t payload_size = 0;
 };
 
@@ -173,6 +176,7 @@ struct OtaRoutes {
   std::string icon_small = "/icon57.png";
   std::string icon_large = "/icon512.png";
   std::string certificate = "/ca.cer";
+  std::string profile = "/profile.mobileconfig";
   std::string ping = "/ping";
 };
 

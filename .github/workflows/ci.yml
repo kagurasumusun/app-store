@@ -189,7 +189,9 @@ jobs:
       # Uploaded before the remaining checks so the artifact survives a later
       # failure, and with if-no-files-found: error so a missing IPA fails the
       # job instead of silently producing no artifact.
-      - name: Upload the device IPA
+      # CI has no signing identity, so this IPA is unsigned and will NOT
+      # install on a real device. Sign locally with --sign and DEVELOPMENT_TEAM.
+      - name: Upload the device IPA (unsigned)
         uses: actions/upload-artifact@v7
         with:
           name: IpaStore-ipa

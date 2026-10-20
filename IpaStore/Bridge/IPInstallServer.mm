@@ -222,6 +222,65 @@ void IPAddCertificateToKeychain(NSData *der, NSString *label) {
   CFRelease(certificate);
 }
 
+/// Builds an Apple configuration profile that installs the root certificate.
+/// The payload UUID is reused for both the profile and the certificate payload
+/// so iOS shows a single install prompt.
+static NSData *IPProfileMobileConfig(NSData *caDER) {
+  CFUUIDRef uuid = CFUUIDCreate(kCFAllocatorDefault);
+  CFStringRef uuidString = CFUUIDCreateString(kCFAllocatorDefault, uuid);
+  CFRelease(uuid);
+  NSString *payload = (__bridge NSString *)uuidString;
+  CFRelease(uuidString);
+
+  NSString *base64 = [caDER base64EncodedStringWithOptions:0];
+  NSString *xml = [NSString stringWithFormat:
+      @"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+      @"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+      @"<plist version=\"1.0\">\n"
+      @"<dict>\n"
+      @"    <key>PayloadContent</key>\n"
+      @"    <array>\n"
+      @"        <dict>\n"
+      @"            <key>PayloadCertificateFile</key>\n"
+      @"            <data>%@</data>\n"
+      @"            <key>PayloadDescription</key>\n"
+      @"            <string>IPAShelf Root CA</string>\n"
+      @"            <key>PayloadDisplayName</key>\n"
+      @"            <string>IPAShelf Root CA</string>\n"
+      @"            <key>PayloadIdentifier</key>\n"
+      @"            <string>com.example.ipastore.profile.certificate</string>\n"
+      @"            <key>PayloadOrganization</key>\n"
+      @"            <string>IPAShelf</string>\n"
+      @"            <key>PayloadType</key>\n"
+      @"            <string>com.apple.security.root</string>\n"
+      @"            <key>PayloadUUID</key>\n"
+      @"            <string>%@</string>\n"
+      @"            <key>PayloadVersion</key>\n"
+      @"            <integer>1</integer>\n"
+      @"        </dict>\n"
+      @"    </array>\n"
+      @"    <key>PayloadDescription</key>\n"
+      @"    <string>IPAShelf local install server root certificate</string>\n"
+      @"    <key>PayloadDisplayName</key>\n"
+      @"    <string>IPAShelf Root CA</string>\n"
+      @"    <key>PayloadIdentifier</key>\n"
+      @"    <string>com.example.ipastore.profile</string>\n"
+      @"    <key>PayloadOrganization</key>\n"
+      @"    <string>IPAShelf</string>\n"
+      @"    <key>PayloadRemovalDisallowed</key>\n"
+      @"    <false/>\n"
+      @"    <key>PayloadType</key>\n"
+      @"    <string>Configuration</string>\n"
+      @"    <key>PayloadUUID</key>\n"
+      @"    <string>%@</string>\n"
+      @"    <key>PayloadVersion</key>\n"
+      @"    <integer>1</integer>\n"
+      @"</dict>\n"
+      @"</plist>\n",
+      base64, payload, payload];
+  return [xml dataUsingEncoding:NSUTF8StringEncoding];
+}
+
 SecIdentityRef IPCopyIdentityForCertificate(NSData *der) CF_RETURNS_RETAINED {
   NSDictionary *query = @{
     (__bridge id)kSecClass : (__bridge id)kSecClassIdentity,
@@ -994,6 +1053,11 @@ struct ConnectionState {
   package.icon_small_path = _artworkPath.UTF8String ?: "";
   package.icon_large_path = _artworkPath.UTF8String ?: "";
   package.certificate_path = _caPath.UTF8String ?: "";
+  if (_certificate != nil) {
+    NSData *profile = IPProfileMobileConfig(_certificate.der);
+    package.profile_data =
+        std::string([profile bytes], [profile length]);
+  }
   std::error_code sizeError;
   package.payload_size = static_cast<std::uint64_t>(
       std::filesystem::file_size(package.payload_path, sizeError));
@@ -1041,10 +1105,16 @@ struct ConnectionState {
   package.icon_small_path = _artworkPath.UTF8String ?: "";
   package.icon_large_path = _artworkPath.UTF8String ?: "";
   package.certificate_path = _caPath.UTF8String ?: "";
+  if (_certificate != nil) {
+    NSData *profile = IPProfileMobileConfig(_certificate.der);
+    package.profile_data =
+        std::string([profile bytes], [profile length]);
+  }
   {
     std::lock_guard<std::mutex> lock(_routerMutex);
     _plainRouter = std::make_shared<ipashelf::OtaRouter>(plainBase, package);
-    _plainRouter->set_page_links(_router->install_url(), plainBase + "/ca.cer");
+    _plainRouter->set_page_links(_router->install_url(),
+                                 plainBase + _plainRouter->routes().profile);
   }
 
   __weak IPInstallServer *weakSelf = self;
@@ -1141,6 +1211,12 @@ struct ConnectionState {
 - (nullable NSString *)certificateURL {
   if (_plainPort <= 0) return nil;
   return [NSString stringWithFormat:@"http://%@:%d/ca.cer", _host, _plainPort];
+}
+
+- (nullable NSString *)profileURL {
+  if (_plainPort <= 0) return nil;
+  return [NSString stringWithFormat:@"http://%@:%d/profile.mobileconfig",
+         _host, _plainPort];
 }
 
 - (void)stop {

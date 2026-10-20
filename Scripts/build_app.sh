@@ -102,6 +102,15 @@ if [[ "${clean}" == "1" ]]; then
   actions=(clean build)
 fi
 
+if [[ "${signing_mode}" == "none" && "${destination}" != *Simulator* ]]; then
+  echo
+  echo "WARNING: building an unsigned device app."
+  echo "The IPA produced by package_ipa.sh will not install on a real device."
+  echo "To install, sign with a development/distribution identity:"
+  echo "  DEVELOPMENT_TEAM=XXXXXXXXXX bash Scripts/build_app.sh --device --sign"
+  echo
+fi
+
 echo "xcodebuild: ${configuration} / ${destination}"
 xcodebuild \
   -project IpaStore.xcodeproj \

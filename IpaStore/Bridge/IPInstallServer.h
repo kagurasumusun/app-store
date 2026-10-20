@@ -67,8 +67,11 @@ typedef NS_ENUM(NSInteger, IPInstallServerState) {
 /// Plain HTTP landing page. Open it in Safari on the device to install the
 /// root certificate and start the installation.
 @property (nonatomic, copy, readonly, nullable) NSString *pageURL;
-/// Plain HTTP URL of the DER certificate.
+/// Plain HTTP URL of the DER certificate (for raw certificate download).
 @property (nonatomic, copy, readonly, nullable) NSString *certificateURL;
+/// Plain HTTP URL of the configuration profile that embeds the root
+/// certificate. Opening this in Safari starts the profile install flow.
+@property (nonatomic, copy, readonly, nullable) NSString *profileURL;
 @property (nonatomic, strong, readonly, nullable) IPInstallCertificate *certificate;
 @property (nonatomic, readonly) IPInstallServerState state;
 

@@ -641,6 +641,13 @@ HttpServerResponse OtaRouter::route(const HttpServerRequest& request) const {
              !package_.certificate_path.empty()) {
     response = file_response(package_.certificate_path,
                              "application/x-x509-ca-cert", request, 0);
+  } else if (request.path == routes_.profile && !package_.profile_data.empty()) {
+    response.body = package_.profile_data;
+    response.set("Content-Type",
+                 "application/x-apple-aspen-config; charset=utf-8");
+    response.set("Content-Disposition",
+                 "attachment; filename=\"IPAShelf Root CA.mobileconfig\"");
+    response.set("Cache-Control", "no-store");
   } else {
     return error_response(404, "not found");
   }

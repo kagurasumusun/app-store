@@ -18,6 +18,7 @@ final class InstallService {
     var installURL: URL?
     var pageURL: URL?
     var certificateURL: URL?
+    var profileURL: URL?
     var certificateFingerprint: String = ""
     var isPresented = false
     var item: LibraryItem?
@@ -51,6 +52,7 @@ final class InstallService {
         installURL = server.installURL.flatMap(URL.init(string:))
         pageURL = server.pageURL.flatMap(URL.init(string:))
         certificateURL = server.certificateURL.flatMap(URL.init(string:))
+        profileURL = server.profileURL.flatMap(URL.init(string:))
         certificateFingerprint = server.certificate?.sha256Fingerprint ?? ""
         phase = .ready
         message = "Waiting for the device"

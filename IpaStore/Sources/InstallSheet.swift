@@ -105,7 +105,14 @@ struct InstallSheet: View {
                 Button {
                     UIApplication.shared.open(pageURL)
                 } label: {
-                    Label("Open the certificate page in Safari", systemImage: "safari")
+                    Label("Open the install page in Safari", systemImage: "safari")
+                }
+            }
+            if let profileURL = service.profileURL {
+                Button {
+                    UIApplication.shared.open(profileURL)
+                } label: {
+                    Label("Install the root certificate profile", systemImage: "checkmark.shield")
                 }
             }
         } header: {
@@ -154,9 +161,9 @@ struct InstallSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("How to trust the certificate")
+                Text("How to trust the root certificate")
                     .font(.subheadline.weight(.semibold))
-                Text("1. Tap “Open the certificate page in Safari”.")
+                Text("1. Tap “Install the root certificate profile” (or open the install page in Safari and tap the certificate link).")
                 Text("2. Allow the profile download, then install it from Settings › General › VPN & Device Management.")
                 Text("3. Open Settings › General › About › Certificate Trust Settings and switch on “IPAShelf Root CA”.")
                 Text("4. Return here and tap Install.")
@@ -164,9 +171,14 @@ struct InstallSheet: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
+            if let profileURL = service.profileURL {
+                ShareLink(item: profileURL) {
+                    Label("Share the root certificate profile", systemImage: "square.and.arrow.up")
+                }
+            }
             if let certificateURL = service.certificateURL {
                 ShareLink(item: certificateURL) {
-                    Label("Share the certificate URL", systemImage: "square.and.arrow.up")
+                    Label("Share the raw certificate file", systemImage: "doc.on.doc")
                 }
             }
         } header: {

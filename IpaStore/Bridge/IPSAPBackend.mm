@@ -33,6 +33,60 @@ using SignFn = int32_t (*)(std::uint64_t context, void *input,
 using TeardownFn = int32_t (*)(std::uint64_t context);
 using DisposeFn = int32_t (*)(void *allocation);
 
+/// Candidate SAP entry-point names observed across iOS releases. The symbols
+/// are obfuscated and change between OS versions, so we try several spellings
+/// per primitive and report exactly which ones were still missing.
+struct SapSymbolCandidates {
+  const char *initialize[4];
+  const char *exchange[4];
+  const char *sign[4];
+  const char *teardown[4];
+  const char *dispose[4];
+};
+
+constexpr SapSymbolCandidates kSapSymbolCandidates{
+    {
+        "cp2g1b9ro",   // iOS 16/17 era
+        "cp2g1b9ro2",  // possible iOS 18+ suffix
+        "_cp2g1b9ro",  // leading-underscore variant
+        nullptr,
+    },
+    {
+        "Mib5yocT",
+        "Mib5yocT2",
+        "_Mib5yocT",
+        nullptr,
+    },
+    {
+        "Fc3vhtJDvr",
+        "Fc3vhtJDvr2",
+        "_Fc3vhtJDvr",
+        nullptr,
+    },
+    {
+        "IPaI1oem5iL",
+        "IPaI1oem5iL2",
+        "_IPaI1oem5iL",
+        nullptr,
+    },
+    {
+        "jEHf8Xzsv8K",
+        "jEHf8Xzsv8K2",
+        "_jEHf8Xzsv8K",
+        nullptr,
+    },
+};
+
+template <typename Fn>
+static Fn FindSapSymbol(const std::vector<void *> &images,
+                        const char *const *candidates) {
+  for (std::size_t index = 0; candidates[index] != nullptr; ++index) {
+    if (Fn symbol = reinterpret_cast<Fn>(FindSymbol(images, candidates[index])))
+      return symbol;
+  }
+  return nullptr;
+}
+
 struct SAPSymbols {
   InitializeFn initialize = nullptr;
   ExchangeFn exchange = nullptr;
@@ -83,20 +137,36 @@ SAPSymbols &Symbols() {
     images.push_back(nullptr);
 
     symbols.initialize =
-        reinterpret_cast<InitializeFn>(FindSymbol(images, "cp2g1b9ro"));
+        FindSapSymbol<InitializeFn>(images, kSapSymbolCandidates.initialize);
     symbols.exchange =
-        reinterpret_cast<ExchangeFn>(FindSymbol(images, "Mib5yocT"));
-    symbols.sign = reinterpret_cast<SignFn>(FindSymbol(images, "Fc3vhtJDvr"));
+        FindSapSymbol<ExchangeFn>(images, kSapSymbolCandidates.exchange);
+    symbols.sign =
+        FindSapSymbol<SignFn>(images, kSapSymbolCandidates.sign);
     symbols.teardown =
-        reinterpret_cast<TeardownFn>(FindSymbol(images, "IPaI1oem5iL"));
-    symbols.dispose = reinterpret_cast<DisposeFn>(FindSymbol(images, "jEHf8Xzsv8K"));
+        FindSapSymbol<TeardownFn>(images, kSapSymbolCandidates.teardown);
+    symbols.dispose =
+        FindSapSymbol<DisposeFn>(images, kSapSymbolCandidates.dispose);
 
     if (symbols.initialize == nullptr || symbols.exchange == nullptr ||
         symbols.sign == nullptr || symbols.teardown == nullptr ||
         symbols.dispose == nullptr) {
+      std::vector<std::string> missing;
+      if (symbols.initialize == nullptr) missing.push_back("initialize");
+      if (symbols.exchange == nullptr) missing.push_back("exchange");
+      if (symbols.sign == nullptr) missing.push_back("sign");
+      if (symbols.teardown == nullptr) missing.push_back("teardown");
+      if (symbols.dispose == nullptr) missing.push_back("dispose");
+      std::string detail;
+      for (std::size_t index = 0; index < missing.size(); ++index) {
+        if (index > 0) detail += ", ";
+        detail += missing[index];
+      }
       symbols.problem =
-          "SAP entry points are missing. App Store signed-in features require "
-          "a physical iPhone or iPad; the Simulator does not ship CoreFP.";
+          "SAP entry points missing (" + detail + "). App Store signed-in "
+          "features require a physical iPhone or iPad; the Simulator does not "
+          "ship CoreFP. On iOS 27 the obfuscated entry-point names may have "
+          "changed; rebuild with updated symbol candidates in "
+          "IpaStore/Bridge/IPSAPBackend.mm.";
     }
   });
   return symbols;

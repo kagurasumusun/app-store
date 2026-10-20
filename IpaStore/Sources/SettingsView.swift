@@ -213,7 +213,7 @@ struct CertificateGuideView: View {
 
                 Label("One-time setup", systemImage: "1.circle")
                     .font(.headline)
-                Text("Open the install server, tap “Open the certificate page in Safari”, allow the profile, then install it from Settings › General › VPN & Device Management.")
+                Text("Open the install server, tap “Install the root certificate profile”, then install it from Settings › General › VPN & Device Management.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 

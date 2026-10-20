@@ -82,7 +82,14 @@ if codesign -v "$APP_PATH" >/dev/null 2>&1; then
   echo "signature: valid"
   codesign -dv "$APP_PATH" 2>&1 | sed -n '1,4p'
 else
-  echo "signature: none (unsigned build; sign before installing on a device)"
+  echo
+  echo "!!! WARNING: unsigned build !!!"
+  echo "This IPA is not signed. It cannot be installed on a real device, and"
+  echo "sign-in will not work because Keychain access requires a signed app."
+  echo "Sign it first, for example:"
+  echo "  DEVELOPMENT_TEAM=XXXXXXXXXX bash Scripts/build_app.sh --device --sign"
+  echo "  bash Scripts/package_ipa.sh"
+  echo
 fi
 
 # --- Build the Payload zip. ------------------------------------------------
