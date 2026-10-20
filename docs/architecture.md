@@ -27,7 +27,7 @@ C++20 コア (Core, 13 ヘッダ + 13 ユニット)
 | ヘッダ | 役割 |
 | --- | --- |
 | `base.hpp` | `Bytes`, `Status`/`Error`/`ErrorCode`, `Result<T>`, `CancellationToken`, ログ |
-| `crypto.hpp` | MD5, SHA-1, SHA-256, Base64, ランダムバイト |
+| `crypto.hpp` | MD5, SHA-1/256, HMAC-SHA1, AES-128 CBC, RSA-OAEP-SHA1, Base64, ランダムバイト |
 | `json.hpp` | 依存なしの JSON DOM（パース・シリアライズ、数値の原文保持） |
 | `plist.hpp` | XML / バイナリ plist の読み書き |
 | `url.hpp` | RFC 3986 のパーセントエンコード、クエリ、パス結合 |
@@ -78,11 +78,10 @@ User taps Download
 
 | ファイル | 役割 |
 | --- | --- |
-| `IPStoreService.h/.mm` | 公開 API。検索・詳細・バージョン・レビュー・DL・アカウント |
+| `IPStoreService.h/.mm` | 公開 API。検索・詳細・バージョン・購入履歴・レビュー・DL・アカウント。DL のレジュームも担当 |
 | `IPModels.mm` | C++ のモデルと `IPStoreApp` などの変換 |
-| `IPInternal.h` | 内部宣言（SAP ファクトリ、トランスポート、ライブラリパス） |
-| `IPHTTPTransport.mm` | `NSURLSession` ベースの `HttpTransport` |
-| `IPSAPBackend.mm` | CoreFP/CommerceKit を `dlopen` して SAP 署名 |
+| `IPInternal.h` | 内部宣言（トランスポート、端末識別子、ライブラリパス） |
+| `IPHTTPTransport.mm` | `NSURLSession` ベースの `HttpTransport`（リクエスト単位のリダイレクト方針と Range 送信に対応） |
 | `IPDeviceIdentity.mm` | 6 バイトの端末識別子（Keychain 保存） |
 | `IPKeychain.mm` | アカウント・トークン・鍵の Keychain アクセス |
 | `IPInstallServer.h/.mm` | TLS リスナー、証明書、OTA 配信 |
@@ -176,9 +175,11 @@ CoreFP・CommerceKit・CommerceCore をロードして呼び出します。
 
 ## ファイル構成の規約
 
-- 追加した Swift ファイルは `Scripts/generate_xcodeproj.py` を再実行すると
-  自動でターゲットに入ります（glob）。
-- C++ ユニットを追加したら `Scripts/build_core.sh` の `SOURCES` と
-  `generate_xcodeproj.py` の glob の両方に反映されます（どちらも glob）。
+- 追加した Swift / C++ ファイルは `Scripts/generate_xcodeproj.py` を
+  再実行すると自動でターゲットに入ります（glob）。CI の静的チェックが
+  生成結果とコミット済みプロジェクトの一致を検証するため、pbxproj の
+  手編集ではなくジェネレータを使ってください。
+- コアのユニットを追加したら `Scripts/build_core.sh` の `SOURCES` にも
+  明示的に足してください（こちらは glob ではありません）。
 - `reference/` はビルド対象外です。生成スクリプトは `IpaStore/` と `Core/`
   だけを走査します。

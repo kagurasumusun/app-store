@@ -7,7 +7,8 @@ iPhone / iPad 向けの、自分が購入・所有している App Store アプ�
 - プロトコル層は **C++20**、iOS 連携は **Objective-C++**、UI は **SwiftUI**
 - **Go は使用していません**。`reference/` 配下のコードは一切コピーしていません
   （参照したのは公開されている仕様・挙動のみ）
-- 外部依存は vendored な **miniz 3.0.2**（MIT、10 ファイル）だけです
+- 外部依存は vendored な **miniz 3.0.2**（MIT）と SAP プロトコルの
+  定数テーブル（`ThirdParty/sap-tables`、出自は同梱の README 参照）だけです
 - ターゲット SDK は **iOS 27 SDK**（Xcode 27 / 27.1）
 
 > **重要**: Apple の非公開エンドポイントを利用します。Apple と無関係の
@@ -39,27 +40,27 @@ iPhone / iPad 向けの、自分が購入・所有している App Store アプ�
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │ SwiftUI (IpaStore/Sources)                                   │
-│  Search / Detail / Versions / Downloads / Library / Install   │
+│  Search / Purchased / Detail / Versions / Downloads / Library │
 └───────────────▲──────────────────────────────────────────────┘
                 │ Objective-C facade (NS_SWIFT_NAME)
 ┌───────────────┴──────────────────────────────────────────────┐
 │ Bridge (IpaStore/Bridge, Objective-C++)                      │
-│  IPStoreService  : ログイン / 検索 / 詳細 / バージョン / DL    │
+│  IPStoreService  : ログイン / 検索 / 購入履歴 / バージョン / DL │
 │  IPInstallServer : TLS リスナー + 証明書生成 + OTA 配信        │
-│  IPHTTPTransport : NSURLSession                              │
-│  IPSAPBackend    : CoreFP / CommerceKit の SAP 呼び出し        │
+│  IPHTTPTransport : NSURLSession（リダイレクト方針・Range 対応）│
 │  IPKeychain      : アカウント・鍵の保存                        │
 └───────────────▲──────────────────────────────────────────────┘
                 │ ポータブル C++ API
 ┌───────────────┴──────────────────────────────────────────────┐
 │ Core (Core/include/ipashelf, Core/src)                       │
 │  store_client : 認証・購入・ダウンロード・バージョン・レビュー  │
-│  bag/sap      : SAP セットアップと署名                         │
-│  plist/json   : XML/バイナリ plist、JSON DOM                   │
-│  ipa          : IPA 検査・iTunesMetadata/sinf 注入             │
+│  owned_apps   : SAP 署名付き DAAP による購入履歴              │
+│  sap_software : SAP v200 の純ソフトウェア署名器               │
+│  bag/plist/json: バッグ検証、XML/バイナリ plist、JSON DOM      │
+│  ipa          : IPA 検査・sinf/メタデータ/アートワーク注入    │
 │  ota          : OTA マニフェスト・HTTP パーサ・Range 配信       │
 │  x509         : ECDSA P-256 証明書の DER 生成                  │
-│  crypto/url   : MD5/SHA-256/Base64、URL エンコード             │
+│  crypto/url   : MD5/SHA/AES/RSA-OAEP、URL エンコード          │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -235,6 +236,9 @@ OTA マニフェスト**を `itms-services` で開いた場合だけです。IPA
   秘密鍵は使用していません。
 - miniz のみ MIT ライセンスの外部コードとして vendoring しています
   （`ThirdParty/miniz`, 謝辞画面に全文掲載）。
+- SAP プロトコルの定数テーブルは `ThirdParty/sap-tables` に同梱しています。
+  出自とライセンス表記は同ディレクトリの `README.md` / `LICENSE` を参照。
+  アプリケーションコード自体は独立実装です。
 
 ---
 
