@@ -5,9 +5,10 @@
 // iOS installs an IPA through `itms-services` only when the manifest is served
 // over HTTPS from a certificate the device trusts. IPAShelf therefore:
 //
-//   * creates a local root CA and a leaf certificate for the device's current
-//     addresses (all key material stays in the keychain),
-//   * serves the manifest, the icons and the IPA over TLS with that identity,
+//   * creates a local root CA and a leaf certificate for `localhost` (plus the
+//     device's current addresses; all key material stays in the keychain),
+//   * serves the manifest, the icons and the IPA over TLS with that identity
+//     on loopback — no network beyond this device is involved,
 //   * serves the root certificate and a help page over plain HTTP, because the
 //     certificate cannot be fetched over a TLS connection that is not trusted
 //     yet.
@@ -90,6 +91,22 @@ typedef NS_ENUM(NSInteger, IPInstallServerState) {
 /// Generates (or loads) the root certificate without starting a server. Used
 /// by Settings to show the fingerprint and export the profile.
 + (IPInstallCertificateResult *)prepareCertificate;
+
+@end
+
+/// Serves only the root-certificate profile over plain HTTP on loopback, so
+/// Settings can offer "Install Root Certificate" before any package exists.
+/// Opening `profileURL` in Safari starts the iOS profile download flow.
+@interface IPInstallCertificateServer : NSObject
+
+@property (nonatomic, copy, readonly, nullable) NSString *profileURL;
+@property (nonatomic, copy, readonly, nullable) NSString *certificateURL;
+@property (nonatomic, strong, readonly, nullable) IPInstallCertificate *certificate;
+@property (nonatomic, strong, readonly, nullable) NSError *startupError;
+
+/// Creates (or loads) the root certificate and starts serving it.
+- (BOOL)start;
+- (void)stop;
 
 @end
 

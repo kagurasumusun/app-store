@@ -59,37 +59,6 @@ NSString *IPCertificateDirectory(void) {
   return directory.path ?: NSTemporaryDirectory();
 }
 
-NSString *IPPreferredHost(void) {
-  struct ifaddrs *interfaces = NULL;
-  if (getifaddrs(&interfaces) != 0) return @"127.0.0.1";
-  NSString *fallback = nil;
-  NSString *result = nil;
-  for (struct ifaddrs *cursor = interfaces; cursor != NULL;
-       cursor = cursor->ifa_next) {
-    if (cursor->ifa_addr == NULL ||
-        cursor->ifa_addr->sa_family != AF_INET) {
-      continue;
-    }
-    const auto *address =
-        reinterpret_cast<const struct sockaddr_in *>(cursor->ifa_addr);
-    char buffer[INET_ADDRSTRLEN] = {0};
-    if (inet_ntop(AF_INET, &address->sin_addr, buffer, sizeof(buffer)) ==
-        NULL) {
-      continue;
-    }
-    NSString *text = @(buffer);
-    if ([text hasPrefix:@"127."]) continue;
-    NSString *name = @(cursor->ifa_name ?: "");
-    if ([name isEqualToString:@"en0"]) {
-      result = text;
-      break;
-    }
-    if (fallback == nil && ![name isEqualToString:@"lo0"]) fallback = text;
-  }
-  freeifaddrs(interfaces);
-  return result ?: fallback ?: @"127.0.0.1";
-}
-
 std::vector<std::vector<std::uint8_t>> IPLocalIPv4Bytes(void) {
   std::vector<std::vector<std::uint8_t>> output;
   output.push_back({127, 0, 0, 1});
@@ -943,7 +912,10 @@ struct ConnectionState {
     return NO;
   }
 
-  _host = IPPreferredHost();
+  // The manifest and payload are fetched by system services on this same
+  // device, so loopback is the only address that must work — Wi-Fi state,
+  // VPNs and address changes cannot break an install.
+  _host = @"localhost";
   if (![self startTLSListenerWithError:error]) {
     [self setState:IPInstallServerStateFailed progress:0 message:@"TLS failed"];
     return NO;
@@ -1245,6 +1217,132 @@ struct ConnectionState {
   if (_state != IPInstallServerStateFailed) {
     [self setState:IPInstallServerStateStopped progress:0 message:@"Stopped"];
   }
+}
+
+@end
+
+#pragma mark - Certificate-only server
+
+@implementation IPInstallCertificateServer {
+  int _socket;
+  int _port;
+  std::atomic<bool> _stopping;
+  std::shared_ptr<ipashelf::OtaRouter> _router;
+}
+
+- (instancetype)init {
+  self = [super init];
+  if (self != nil) {
+    _socket = -1;
+    _port = 0;
+    _stopping.store(false);
+  }
+  return self;
+}
+
+- (void)dealloc {
+  [self stop];
+}
+
+- (BOOL)start {
+  if (_socket >= 0) return YES;
+  _startupError = nil;
+
+  NSError *error = nil;
+  IPInstallCertificate *certificate =
+      [IPInstallServer prepareCertificateWithError:&error];
+  if (certificate == nil) {
+    _startupError = error ?: IPInstallError(
+                                 IPStoreErrorInternal,
+                                 @"Certificate generation failed.");
+    return NO;
+  }
+  _certificate = certificate;
+
+  const int fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) {
+    _startupError = IPInstallError(IPStoreErrorNetwork,
+                                   @"Could not open a socket.");
+    return NO;
+  }
+  int reuse = 1;
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  // The profile is fetched by Safari on this device only.
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = 0;
+  if (bind(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0 ||
+      listen(fd, 8) != 0) {
+    close(fd);
+    _startupError = IPInstallError(IPStoreErrorNetwork,
+                                   @"Could not bind the certificate server.");
+    return NO;
+  }
+  socklen_t length = sizeof(address);
+  getsockname(fd, reinterpret_cast<sockaddr *>(&address), &length);
+  _socket = fd;
+  _port = ntohs(address.sin_port);
+
+  const std::string base =
+      "http://localhost:" + std::to_string(_port);
+  ipashelf::OtaPackage package;
+  package.title = "IPAShelf Root CA";
+  NSString *caPath = [IPCertificateDirectory()
+      stringByAppendingPathComponent:@"root-ca.der"];
+  package.certificate_path = caPath.UTF8String ?: "";
+  NSData *profile = IPProfileMobileConfig(certificate.der);
+  package.profile_data = std::string(
+      static_cast<const char *>(profile.bytes), profile.length);
+  _router = std::make_shared<ipashelf::OtaRouter>(base, package);
+  const std::string profileLink = base + _router->routes().profile;
+  _router->set_page_links(profileLink, profileLink);
+
+  _stopping.store(false);
+  const int listenFD = fd;
+  __weak IPInstallCertificateServer *weakSelf = self;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    IPInstallCertificateServer *strongSelf = weakSelf;
+    if (strongSelf == nil) {
+      close(listenFD);
+      return;
+    }
+    // Keep the server and its router alive for the loop's lifetime: stop()
+    // shuts the listen socket down, which is what ends the loop.
+    auto router = strongSelf->_router;
+    while (!strongSelf->_stopping.load()) {
+      const int client = accept(listenFD, nullptr, nullptr);
+      if (client < 0) break;
+      if (router) {
+        ipashelf::CancellationSource cancellation;
+        (void)ipashelf::serve_http_connection(client, *router,
+                                              cancellation.token());
+      }
+      close(client);
+    }
+  });
+  return YES;
+}
+
+- (void)stop {
+  _stopping.store(true);
+  if (_socket >= 0) {
+    shutdown(_socket, SHUT_RDWR);
+    close(_socket);
+    _socket = -1;
+  }
+  _port = 0;
+}
+
+- (nullable NSString *)profileURL {
+  if (_port <= 0) return nil;
+  return [NSString stringWithFormat:@"http://localhost:%d/profile.mobileconfig",
+          _port];
+}
+
+- (nullable NSString *)certificateURL {
+  if (_port <= 0) return nil;
+  return [NSString stringWithFormat:@"http://localhost:%d/ca.cer", _port];
 }
 
 @end

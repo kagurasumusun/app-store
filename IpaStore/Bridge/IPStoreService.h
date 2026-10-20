@@ -119,6 +119,9 @@ FOUNDATION_EXPORT NSErrorDomain const IPStoreErrorDomain;
 @property (nonatomic, copy, readonly) NSString *region;
 @property (nonatomic, copy, readonly) NSString *storefront;
 @property (nonatomic, copy, readonly) NSString *directoryServicesID NS_SWIFT_NAME(directoryServicesID);
+/// Whether the account's password is stored (in the Keychain) so its token
+/// can be rotated without asking for the password again.
+@property (nonatomic, readonly) BOOL hasSavedPassword;
 @end
 
 @interface IPStoreLoginResult : NSObject
@@ -178,6 +181,24 @@ FOUNDATION_EXPORT NSErrorDomain const IPStoreErrorDomain;
                                  NSError *_Nullable error))completion
     NS_SWIFT_NAME(login(email:password:authCode:region:completion:));
 
+/// Rotates the account's password token by signing in again with the stored
+/// password. The refreshed account replaces the stored one. When Apple
+/// asks for a verification code the result reports `twoFactorRequired` and
+/// the caller can retry with `authCode` set.
+- (void)refreshAccount:(IPStoreAccount *)account
+              authCode:(nullable NSString *)authCode
+            completion:(void (^)(IPStoreLoginResult *_Nullable result,
+                                 NSError *_Nullable error))completion
+    NS_SWIFT_NAME(refresh(account:authCode:completion:));
+
+/// Acquires the app's license for the account without downloading it.
+/// Free apps only; already-owned apps succeed.
+- (void)purchaseApp:(IPStoreApp *)app
+            account:(IPStoreAccount *)account
+           platform:(IPStorePlatform)platform
+         completion:(void (^)(NSError *_Nullable error))completion
+    NS_SWIFT_NAME(purchase(app:account:platform:completion:));
+
 - (void)searchForTerm:(NSString *)term
                region:(NSString *)region
              platform:(IPStorePlatform)platform
@@ -214,8 +235,8 @@ FOUNDATION_EXPORT NSErrorDomain const IPStoreErrorDomain;
     NS_SWIFT_NAME(listVersions(app:account:platform:completion:));
 
 /// Resolves the marketing version and release date of one external version
-/// by reading the package's Info.plist over HTTP range requests. The full
-/// package is never downloaded.
+/// from the version-pinned download response. The package itself is never
+/// downloaded.
 - (void)versionMetadataForApp:(IPStoreApp *)app
                       account:(IPStoreAccount *)account
             externalVersionID:(NSString *)externalVersionID

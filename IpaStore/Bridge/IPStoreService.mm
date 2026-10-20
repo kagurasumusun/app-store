@@ -569,6 +569,74 @@ static ipashelf::StoreClient MakeStoreClient(void) {
   });
 }
 
+- (void)refreshAccount:(IPStoreAccount *)account
+              authCode:(nullable NSString *)authCode
+            completion:(void (^)(IPStoreLoginResult *_Nullable,
+                                 NSError *_Nullable))completion {
+  dispatch_async(_queue, ^{
+    // Rotate the *stored* account: the caller may hold a stale handle.
+    IPStoreAccount *stored =
+        [self->_accountStore accountForEmail:account.email] ?: account;
+    const ipashelf::Account coreAccount = stored.coreAccount;
+    if (coreAccount.password.empty()) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        completion(nil, MakeErrorCode(IPStoreErrorUnauthorized,
+                                      @"This account has no saved password. "
+                                      @"Sign in again to refresh it."));
+      });
+      return;
+    }
+    ipashelf::StoreClient client = MakeStoreClient();
+    ipashelf::LoginRequest request;
+    request.email = coreAccount.email;
+    request.password = coreAccount.password;
+    request.auth_code = authCode.UTF8String ?: "";
+    request.region = coreAccount.region.empty() ? "US" : coreAccount.region;
+    request.hardware = IPHardwareIdentity();
+
+    ipashelf::CancellationSource source;
+    auto result = client.login(request, source.token());
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!result) {
+        completion(nil, MakeError(result.error()));
+        return;
+      }
+      if (result.value().two_factor_required) {
+        completion([[IPStoreLoginResult alloc] initWithAccount:nil
+                                            twoFactorRequired:YES],
+                   nil);
+        return;
+      }
+      IPStoreAccount *refreshed =
+          [[IPStoreAccount alloc] initWithAccount:result.value().account];
+      [self->_accountStore upsertAccount:refreshed];
+      completion([[IPStoreLoginResult alloc] initWithAccount:refreshed
+                                          twoFactorRequired:NO],
+                 nil);
+    });
+  });
+}
+
+- (void)purchaseApp:(IPStoreApp *)app
+            account:(IPStoreAccount *)account
+           platform:(IPStorePlatform)platform
+         completion:(void (^)(NSError *_Nullable))completion {
+  dispatch_async(_queue, ^{
+    ipashelf::StoreClient client = MakeStoreClient();
+    ipashelf::App coreApp;
+    coreApp.id = app.appID;
+    coreApp.bundle_id = app.bundleID.UTF8String ?: "";
+    coreApp.name = app.name.UTF8String ?: "";
+    coreApp.price = app.price;
+    ipashelf::CancellationSource source;
+    auto status = client.purchase(account.coreAccount, coreApp,
+                                  IPCorePlatform(platform), source.token());
+    dispatch_async(dispatch_get_main_queue(), ^{
+      completion(status ? nil : MakeError(status.error()));
+    });
+  });
+}
+
 - (void)searchForTerm:(NSString *)term
                region:(NSString *)region
              platform:(IPStorePlatform)platform

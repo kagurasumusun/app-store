@@ -96,6 +96,10 @@ static NSArray<NSString *> *IPPlatforms(const std::vector<ipashelf::Platform> &p
   return self;
 }
 
+- (BOOL)hasSavedPassword {
+  return _password.length > 0;
+}
+
 - (ipashelf::Account)coreAccount {
   ipashelf::Account account;
   account.email = _email.UTF8String ?: "";

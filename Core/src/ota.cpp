@@ -139,8 +139,17 @@ std::string build_install_page(std::string_view page_title,
   page += "font-weight:600}code{background:#f0f0f5;padding:2px 6px;border-radius:6px}";
   page += "</style></head><body><main>";
   page += "<h1>" + title + "</h1>";
-  page += "<p>Version " + escape_html(display_version) +
-          " &middot; <code>" + escape_html(bundle_id) + "</code></p>";
+  if (!display_version.empty() || !bundle_id.empty()) {
+    page += "<p>";
+    if (!display_version.empty()) {
+      page += "Version " + escape_html(display_version);
+    }
+    if (!bundle_id.empty()) {
+      if (!display_version.empty()) page += " &middot; ";
+      page += "<code>" + escape_html(bundle_id) + "</code>";
+    }
+    page += "</p>";
+  }
   page += "<a class=\"button\" href=\"" + install + "\">Install on this device</a>";
   if (!certificate_url.empty()) {
     page += "<p>First install and trust the IPAShelf root certificate, then return "
