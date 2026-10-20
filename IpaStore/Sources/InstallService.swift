@@ -9,7 +9,7 @@ import UIKit
 ///
 /// The servers themselves live in Objective-C++ (`IPInstallServer` and
 /// `IPInstallCertificateServer`): a locally generated root CA signs a leaf
-/// for `localhost`, the manifest and IPA are served over TLS on loopback,
+/// for loopback, the manifest and IPA are served over TLS on 127.0.0.1,
 /// and the certificate profile is served over plain HTTP so it can be
 /// fetched before the CA is trusted.
 @MainActor
@@ -105,6 +105,9 @@ final class InstallService {
     /// the user to confirm the installation.
     func openInstallURL() {
         guard let installURL else { return }
+        // Begun here, in the foreground: installd fetches from this process
+        // while the user is looking at the system prompt.
+        beginBackgroundAssertion()
         UIApplication.shared.open(installURL)
     }
 
@@ -158,6 +161,11 @@ final class InstallService {
         // When an install server is already running its own profile
         // endpoint is the right one; a second server would be redundant.
         if let profileURL {
+            // Safari fetches the profile from this process after we hand
+            // over. Without the assertion the app is suspended seconds
+            // later and the fetch never completes — Safari reports it
+            // cannot connect. Begun before opening, in the foreground.
+            beginBackgroundAssertion()
             UIApplication.shared.open(profileURL)
             return true
         }
@@ -176,6 +184,7 @@ final class InstallService {
             certificateError = "The certificate server did not publish a URL."
             return false
         }
+        beginBackgroundAssertion()
         UIApplication.shared.open(url)
         return true
     }
@@ -183,14 +192,19 @@ final class InstallService {
     func stopCertificateServer() {
         certificateServer?.stop()
         certificateServer = nil
+        if server == nil {
+            endBackgroundAssertion()
+        }
     }
 
     // MARK: Background assertion
 
     /// Keeps the process (and therefore the listener) alive briefly after the
-    /// user leaves the app to accept the install prompt.
+    /// user leaves the app to accept the install prompt or fetch the
+    /// certificate profile in Safari.
     func beginBackgroundAssertion() {
-        guard server != nil, backgroundTask == .invalid else { return }
+        guard server != nil || certificateServer != nil,
+              backgroundTask == .invalid else { return }
         let identifier = UIApplication.shared.beginBackgroundTask(withName: "IPAShelf.Install") { [weak self] in
             Task { @MainActor in self?.endBackgroundAssertion() }
         }

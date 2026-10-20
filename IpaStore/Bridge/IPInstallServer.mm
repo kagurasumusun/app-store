@@ -258,62 +258,47 @@ BOOL IPTrustEvaluates(NSArray<NSData *> *chainDER, NSData *_Nullable anchorDER,
 }
 
 /// Builds an Apple configuration profile that installs the root certificate.
-/// The profile and its certificate payload get distinct UUIDs, and the
-/// certificate bytes travel in the payload's `PayloadContent` — with any
-/// other key, iOS installs an empty profile and no certificate ever lands.
+/// Serialized from genuine plist objects (instead of a hand-formatted XML
+/// template) so the structure cannot drift: the certificate bytes travel in
+/// the payload's `PayloadContent` data element, and the profile and its
+/// payload carry distinct UUIDs. iOS refuses a profile whose payload lacks
+/// `PayloadContent` outright, so there is no room for spelling safety here
+/// other than the serializer's.
 static NSData *IPProfileMobileConfig(NSData *caDER) {
-  NSString *profileUUID = [[NSUUID UUID] UUIDString];
-  NSString *payloadUUID = [[NSUUID UUID] UUIDString];
+  if (caDER.length == 0) return [NSData data];
 
-  NSString *base64 = [caDER base64EncodedStringWithOptions:0];
-  NSString *xml = [NSString stringWithFormat:
-      @"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-      @"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
-      @"<plist version=\"1.0\">\n"
-      @"<dict>\n"
-      @"    <key>PayloadContent</key>\n"
-      @"    <array>\n"
-      @"        <dict>\n"
-      @"            <key>PayloadCertificateFileName</key>\n"
-      @"            <string>IPAShelf Root CA.cer</string>\n"
-      @"            <key>PayloadContent</key>\n"
-      @"            <data>%@</data>\n"
-      @"            <key>PayloadDescription</key>\n"
-      @"            <string>IPAShelf Root CA</string>\n"
-      @"            <key>PayloadDisplayName</key>\n"
-      @"            <string>IPAShelf Root CA</string>\n"
-      @"            <key>PayloadIdentifier</key>\n"
-      @"            <string>com.example.ipastore.profile.certificate</string>\n"
-      @"            <key>PayloadOrganization</key>\n"
-      @"            <string>IPAShelf</string>\n"
-      @"            <key>PayloadType</key>\n"
-      @"            <string>com.apple.security.root</string>\n"
-      @"            <key>PayloadUUID</key>\n"
-      @"            <string>%@</string>\n"
-      @"            <key>PayloadVersion</key>\n"
-      @"            <integer>1</integer>\n"
-      @"        </dict>\n"
-      @"    </array>\n"
-      @"    <key>PayloadDescription</key>\n"
-      @"    <string>IPAShelf local install server root certificate</string>\n"
-      @"    <key>PayloadDisplayName</key>\n"
-      @"    <string>IPAShelf Root CA</string>\n"
-      @"    <key>PayloadIdentifier</key>\n"
-      @"    <string>com.example.ipastore.profile</string>\n"
-      @"    <key>PayloadOrganization</key>\n"
-      @"    <string>IPAShelf</string>\n"
-      @"    <key>PayloadRemovalDisallowed</key>\n"
-      @"    <false/>\n"
-      @"    <key>PayloadType</key>\n"
-      @"    <string>Configuration</string>\n"
-      @"    <key>PayloadUUID</key>\n"
-      @"    <string>%@</string>\n"
-      @"    <key>PayloadVersion</key>\n"
-      @"    <integer>1</integer>\n"
-      @"</dict>\n"
-      @"</plist>\n",
-      base64, payloadUUID, profileUUID];
-  return [xml dataUsingEncoding:NSUTF8StringEncoding];
+  NSDictionary<NSString *, id> *payload = @{
+    @"PayloadCertificateFileName" : @"IPAShelf Root CA.cer",
+    @"PayloadContent" : caDER,
+    @"PayloadDescription" : @"IPAShelf Root CA",
+    @"PayloadDisplayName" : @"IPAShelf Root CA",
+    @"PayloadIdentifier" : @"com.example.ipastore.profile.certificate",
+    @"PayloadOrganization" : @"IPAShelf",
+    @"PayloadType" : @"com.apple.security.root",
+    @"PayloadUUID" : [[NSUUID UUID] UUIDString],
+    @"PayloadVersion" : @1,
+  };
+  NSDictionary<NSString *, id> *profile = @{
+    @"PayloadContent" : @[ payload ],
+    @"PayloadDescription" : @"IPAShelf local install server root certificate",
+    @"PayloadDisplayName" : @"IPAShelf Root CA",
+    @"PayloadIdentifier" : @"com.example.ipastore.profile",
+    @"PayloadOrganization" : @"IPAShelf",
+    @"PayloadRemovalDisallowed" : @NO,
+    @"PayloadType" : @"Configuration",
+    @"PayloadUUID" : [[NSUUID UUID] UUIDString],
+    @"PayloadVersion" : @1,
+  };
+  NSError *error = nil;
+  NSData *data = [NSPropertyListSerialization
+      dataWithPropertyList:profile
+                    format:NSPropertyListXMLFormat_v1_0
+                   options:0
+                     error:&error];
+  if (data == nil) {
+    NSLog(@"IPAShelf: profile serialization failed: %@", error);
+  }
+  return data ?: [NSData data];
 }
 
 SecIdentityRef IPCopyIdentityForCertificate(NSData *der) CF_RETURNS_RETAINED {
@@ -1013,7 +998,7 @@ struct ConnectionState {
   // if this fails, installs would fail opaquely minutes later.
   NSString *trustDetail = nil;
   if (!IPTrustEvaluates(@[ leafCertificate, certificate.der ],
-                        certificate.der, @"localhost", &trustDetail)) {
+                        certificate.der, @"127.0.0.1", &trustDetail)) {
     CFRelease(leafKey);
     if (error != NULL) {
       *error = IPInstallError(
@@ -1041,8 +1026,10 @@ struct ConnectionState {
 
   // The manifest and payload are fetched by system services on this same
   // device, so loopback is the only address that must work — Wi-Fi state,
-  // VPNs and address changes cannot break an install.
-  _host = @"localhost";
+  // VPNs and address changes cannot break an install. Advertise the literal
+  // 127.0.0.1 (not the name "localhost"): the listeners are IPv4, and
+  // resolving the name can try ::1 first, which has nowhere to land.
+  _host = @"127.0.0.1";
   if (![self startTLSListenerWithError:error]) {
     [self setState:IPInstallServerStateFailed progress:0 message:@"TLS failed"];
     return NO;
@@ -1087,7 +1074,7 @@ struct ConnectionState {
   }
 
   nw_endpoint_t endpoint =
-      nw_endpoint_create_host("0.0.0.0", "0");
+      nw_endpoint_create_host("127.0.0.1", "0");
   nw_parameters_set_local_endpoint(parameters, endpoint);
   nw_listener_t listener = nw_listener_create(parameters);
   if (listener == NULL) {
@@ -1177,7 +1164,8 @@ struct ConnectionState {
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
   sockaddr_in address{};
   address.sin_family = AF_INET;
-  address.sin_addr.s_addr = htonl(INADDR_ANY);
+  // The landing page and profile are fetched by Safari on this device only.
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   address.sin_port = 0;
   if (bind(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0 ||
       listen(fd, 8) != 0) {
@@ -1235,12 +1223,19 @@ struct ConnectionState {
         router = strongSelf->_plainRouter;
       }
       if (router) {
-        ipashelf::CancellationSource cancellation;
-        const auto status = ipashelf::serve_http_connection(
-            client, *router, cancellation.token());
-        (void)status;
+        // Serve connections concurrently: Safari opens speculative sockets
+        // that send nothing, and one such connection must not park the real
+        // request behind it in a serial accept loop.
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+          ipashelf::CancellationSource cancellation;
+          const auto status = ipashelf::serve_http_connection(
+              client, *router, cancellation.token());
+          (void)status;
+          close(client);
+        });
+      } else {
+        close(client);
       }
-      close(client);
     }
   });
   return YES;
@@ -1411,8 +1406,10 @@ struct ConnectionState {
   _socket = fd;
   _port = ntohs(address.sin_port);
 
+  // Advertise the literal loopback address: the socket is IPv4-only, and
+  // "localhost" can resolve to ::1 first, which has nowhere to land.
   const std::string base =
-      "http://localhost:" + std::to_string(_port);
+      "http://127.0.0.1:" + std::to_string(_port);
   ipashelf::OtaPackage package;
   package.title = "IPAShelf Root CA";
   NSString *caPath = [IPCertificateDirectory()
@@ -1441,11 +1438,18 @@ struct ConnectionState {
       const int client = accept(listenFD, nullptr, nullptr);
       if (client < 0) break;
       if (router) {
-        ipashelf::CancellationSource cancellation;
-        (void)ipashelf::serve_http_connection(client, *router,
-                                              cancellation.token());
+        // Concurrent per-connection service: one idle/speculative Safari
+        // socket can otherwise wedge the loop while the real request waits,
+        // which surfaced as "could not connect to localhost".
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+          ipashelf::CancellationSource cancellation;
+          (void)ipashelf::serve_http_connection(client, *router,
+                                                cancellation.token());
+          close(client);
+        });
+      } else {
+        close(client);
       }
-      close(client);
     }
   });
   return YES;
@@ -1463,13 +1467,13 @@ struct ConnectionState {
 
 - (nullable NSString *)profileURL {
   if (_port <= 0) return nil;
-  return [NSString stringWithFormat:@"http://localhost:%d/profile.mobileconfig",
+  return [NSString stringWithFormat:@"http://127.0.0.1:%d/profile.mobileconfig",
           _port];
 }
 
 - (nullable NSString *)certificateURL {
   if (_port <= 0) return nil;
-  return [NSString stringWithFormat:@"http://localhost:%d/ca.cer", _port];
+  return [NSString stringWithFormat:@"http://127.0.0.1:%d/ca.cer", _port];
 }
 
 @end

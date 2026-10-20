@@ -5,8 +5,8 @@
 // iOS installs an IPA through `itms-services` only when the manifest is served
 // over HTTPS from a certificate the device trusts. IPAShelf therefore:
 //
-//   * creates a local root CA and a leaf certificate for `localhost` (plus the
-//     device's current addresses; all key material stays in the keychain),
+//   * creates a local root CA and a leaf certificate for loopback
+//     (127.0.0.1/`localhost`; all key material stays in the keychain),
 //   * serves the manifest, the icons and the IPA over TLS with that identity
 //     on loopback — no network beyond this device is involved,
 //   * serves the root certificate and a help page over plain HTTP, because the
