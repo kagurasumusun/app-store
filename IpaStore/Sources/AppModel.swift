@@ -47,13 +47,13 @@ final class DownloadItem: Identifiable {
     }
 
     var progressLabel: String {
-        if state == .processing { return "Verifying and patching…" }
+        if state == .processing { return String(localized: "Verifying and patching…") }
         guard expectedBytes > 0 else {
             return ByteCountFormatter.string(fromByteCount: receivedBytes, countStyle: .file)
         }
         let received = ByteCountFormatter.string(fromByteCount: receivedBytes, countStyle: .file)
         let expected = ByteCountFormatter.string(fromByteCount: expectedBytes, countStyle: .file)
-        return "\(received) of \(expected)"
+        return String(localized: "\(received) of \(expected)")
     }
 
     var speedLabel: String {
@@ -67,7 +67,7 @@ final class DownloadItem: Identifiable {
         formatter.allowedUnits = remaining > 90 ? [.minute, .second] : [.second]
         formatter.unitsStyle = .abbreviated
         let eta = formatter.string(from: remaining) ?? "\(Int(remaining))s"
-        return "\(speed)/s · \(eta) left"
+        return String(localized: "\(speed)/s · \(eta) left")
     }
 
     func update(received: Int64, expected: Int64, fraction: Double) {
@@ -88,23 +88,20 @@ final class DownloadItem: Identifiable {
 
 /// The root tab identifiers. Kept as a fixed enum (rather than a computed list)
 /// so the tab bar always has a selectable value: linked-on-iOS-27 `TabView`
-/// traps when the selection does not match a visible tab.
+/// traps when the selection does not match a visible tab. Accounts and
+/// settings live behind the avatar button, like the App Store account page.
 enum AppTab: String, Hashable, CaseIterable, Identifiable {
     case search
     case purchased
     case downloads
-    case accounts
-    case settings
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .search: return "Search"
-        case .purchased: return "Purchased"
-        case .downloads: return "Downloads"
-        case .accounts: return "Accounts"
-        case .settings: return "Settings"
+        case .search: return String(localized: "Search")
+        case .purchased: return String(localized: "Purchased")
+        case .downloads: return String(localized: "Downloads")
         }
     }
 
@@ -113,8 +110,6 @@ enum AppTab: String, Hashable, CaseIterable, Identifiable {
         case .search: return "magnifyingglass"
         case .purchased: return "bag"
         case .downloads: return "arrow.down.circle"
-        case .accounts: return "person.crop.circle"
-        case .settings: return "gearshape"
         }
     }
 }
@@ -167,6 +162,7 @@ final class AppModel {
     var selectedTab: AppTab = .search
     var alert: AlertMessage?
     var showLogin = false
+    var showAccount = false
 
     let service = StoreService()
 
@@ -360,7 +356,7 @@ final class AppModel {
     func loadVersions(for app: StoreApp, force: Bool = false) async {
         if !force, versions[app.appID] != nil { return }
         guard var account = activeAccount else {
-            versionErrors[app.appID] = "Sign in to list every version Apple has issued for this app."
+            versionErrors[app.appID] = String(localized: "Sign in to list every version Apple has issued for this app.")
             return
         }
         do {
@@ -412,7 +408,8 @@ final class AppModel {
         }
         do {
             try await service.purchase(app: app, account: account, platform: platform)
-            presentMessage("Purchased", "\(app.name) was added to \(account.email).")
+            presentMessage(String(localized: "Purchased"),
+                           String(localized: "\(app.name) was added to \(account.email)."))
             ownedPage = 0
             hasLoadedOwned = false
         } catch {
@@ -421,7 +418,8 @@ final class AppModel {
                let refreshed = await refreshActiveSilently() {
                 do {
                     try await service.purchase(app: app, account: refreshed, platform: platform)
-                    presentMessage("Purchased", "\(app.name) was added to \(refreshed.email).")
+                    presentMessage(String(localized: "Purchased"),
+                                   String(localized: "\(app.name) was added to \(refreshed.email)."))
                     return
                 } catch {
                     present(error)
@@ -511,6 +509,65 @@ final class AppModel {
 
     // MARK: Downloads
 
+    /// The in-flight transfer for an app (and optionally one specific
+    /// build), used by the GET buttons to show progress in place.
+    func activeDownload(for appID: Int64, versionID: String? = nil) -> DownloadItem? {
+        downloads.first { item in
+            item.app.appID == appID
+                && (item.state == .downloading || item.state == .processing)
+                && (versionID == nil || item.versionID == versionID)
+        }
+    }
+
+    /// The App Store "GET" action: silently adds a free app to the account
+    /// when needed, then downloads it. Progress is shown on the button
+    /// itself, so the user is never yanked to another tab.
+    func get(_ app: StoreApp, versionID: String? = nil) {
+        guard let account = activeAccount else {
+            showLogin = true
+            return
+        }
+        if !app.isFree, !isOwned(app.appID) {
+            presentMessage(
+                String(localized: "Paid App"),
+                String(localized: "Paid apps can only be downloaded after buying them in the App Store. Purchases made there appear under Purchased."))
+            return
+        }
+        if activeDownload(for: app.appID, versionID: versionID) != nil { return }
+        Task {
+            var resolved = account
+            if app.isFree, !isOwned(app.appID) {
+                do {
+                    try await service.purchase(app: app, account: resolved, platform: platform)
+                } catch {
+                    let storeError = StoreError(error)
+                    if storeError.code == .tokenExpired,
+                       let refreshed = await refreshActiveSilently() {
+                        resolved = refreshed
+                        do {
+                            try await service.purchase(app: app, account: resolved, platform: platform)
+                        } catch {
+                            present(error)
+                            return
+                        }
+                    } else if storeError.code != .cancelled {
+                        // A license-conflict style answer can still leave the
+                        // app downloadable; only hard failures stop here. The
+                        // download itself validates the licence, so fall
+                        // through for anything but auth/network showstoppers.
+                        if storeError.isSignInProblem {
+                            present(error)
+                            return
+                        }
+                    }
+                }
+                ownedPage = 0
+                hasLoadedOwned = false
+            }
+            download(app, versionID: versionID)
+        }
+    }
+
     func download(_ app: StoreApp, versionID: String? = nil) {
         guard let account = activeAccount else {
             showLogin = true
@@ -518,7 +575,6 @@ final class AppModel {
         }
         let item = DownloadItem(app: app, versionID: versionID)
         downloads.insert(item, at: 0)
-        selectedTab = .downloads
 
         Task {
             await runDownload(item, account: account, allowTokenRefresh: true)
@@ -643,6 +699,11 @@ final class AppModel {
         return library.first { $0.fileURL.path == path }
     }
 
+    /// The newest downloaded package for an app, if one is in the library.
+    func libraryItem(forAppID appID: Int64) -> LibraryItem? {
+        library.first { $0.appID == appID }
+    }
+
     /// Copies an externally provided IPA (Files app, share sheet) into the
     /// download folder so it can be installed or shared like a download.
     func importIPA(from url: URL) {
@@ -687,14 +748,14 @@ final class AppModel {
 
     private func title(for error: StoreError) -> String {
         switch error.code {
-        case .signerUnavailable: return "Signed-in features unavailable"
-        case .unauthorized, .tokenExpired: return "Sign in again"
-        case .network: return "Network error"
-        case .appNotFound: return "App not found"
-        case .licenseRequired: return "Purchase required"
-        case .unsupported: return "Not supported"
-        case .storage, .integrity: return "Could not save the package"
-        default: return "Something went wrong"
+        case .signerUnavailable: return String(localized: "Signed-in features unavailable")
+        case .unauthorized, .tokenExpired: return String(localized: "Sign in again")
+        case .network: return String(localized: "Network error")
+        case .appNotFound: return String(localized: "App not found")
+        case .licenseRequired: return String(localized: "Purchase required")
+        case .unsupported: return String(localized: "Not supported")
+        case .storage, .integrity: return String(localized: "Could not save the package")
+        default: return String(localized: "Something went wrong")
         }
     }
 }

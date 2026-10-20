@@ -121,16 +121,16 @@ CoreFP・CommerceKit・CommerceCore をロードして呼び出します。
 | `PurchasedView.swift` | 購入履歴（DAAP）のページネーション一覧 |
 | `DownloadsView.swift` | 転送中タスクとダウンロード済みファイル（インストール/共有/削除/取込） |
 | `InstallSheet.swift` | インストールのステータス画面（自動でシステム確認を開く） |
-| `AccountsView.swift` | アカウント一覧・詳細（トークン更新）、サインイン、2FA |
-| `SettingsView.swift` | Root CA 導入、デバイス GUID、ストレージ、謝辞 |
-| `RootView.swift` | 5 つのタブ（検索/購入済み/ダウンロード/アカウント/設定） |
+| `AccountsView.swift` | アカウントハブ（アカウント一覧・詳細（トークン更新）、Root CA 導入、外観、ストレージ、デバイス GUID、謝辞）、サインイン、2FA |
+| `Theme.swift` | アクセント色と外観（ライト/ダーク）の選択・永続化 |
+| `RootView.swift` | 3 つのタブ（検索/購入済み/ダウンロード）+ アバターから開くアカウントハブ、ダウンロード中のボトムアクセサリ |
 | `IpaStoreApp.swift` | エントリポイント、IPA 取り込み、バックグラウンド遷移 |
 
 ### 状態管理
 
 - `AppModel` は `@MainActor @Observable`。View は
   `@Environment(AppModel.self)` で受け取ります。
-- 永続化は UserDefaults（地域・プラットフォーム・検索履歴・ウィッシュリスト）
+- 永続化は UserDefaults（地域・プラットフォーム・検索履歴・アクセント色・外観）
   と Keychain（アカウント）、ファイル（IPA と sidecar）に分かれます。
 - ダウンロードは `DownloadItem` が進捗・速度・残り時間を保持し、
   `AppModel` が配列で管理します。キャンセルはブリッジの

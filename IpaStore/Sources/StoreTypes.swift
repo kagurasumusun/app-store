@@ -106,7 +106,7 @@ struct StoreApp: Identifiable, Hashable {
     var isFree: Bool { price <= 0.0001 }
 
     var priceLabel: String {
-        guard !isFree else { return "Free" }
+        guard !isFree else { return String(localized: "Free") }
         guard let formatted = formattedPrice else {
             return "\(Int(price.rounded())) \(currency)"
         }
@@ -122,18 +122,23 @@ struct StoreApp: Identifiable, Hashable {
     }
 
     var ratingLabel: String {
-        guard ratingCount > 0 else { return "No ratings" }
+        guard ratingCount > 0 else { return String(localized: "No ratings") }
         return String(format: "%.1f", averageRating)
     }
 
-    var ratingCountLabel: String {
+    /// Compact count only ("1.2K"); views add the localized unit.
+    var ratingCountCompact: String {
         if ratingCount >= 100_000 {
-            return "\(ratingCount / 1_000)k ratings"
+            return "\(ratingCount / 1_000)K"
         }
         if ratingCount >= 1_000 {
-            return String(format: "%.1fK ratings", Double(ratingCount) / 1_000)
+            return String(format: "%.1fK", Double(ratingCount) / 1_000)
         }
-        return "\(ratingCount) ratings"
+        return "\(ratingCount)"
+    }
+
+    var ratingCountLabel: String {
+        String(localized: "\(ratingCountCompact) ratings")
     }
 
     var sizeLabel: String {
@@ -316,10 +321,10 @@ enum SearchSort: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .relevance: return "Relevance"
-        case .name: return "Name"
-        case .rating: return "Rating"
-        case .recent: return "Newest"
+        case .relevance: return String(localized: "Relevance")
+        case .name: return String(localized: "Name")
+        case .rating: return String(localized: "Rating")
+        case .recent: return String(localized: "Newest")
         }
     }
 }
@@ -381,7 +386,9 @@ struct StoreVersion: Identifiable, Hashable {
 
     var id: String { externalVersionID }
     var title: String {
-        displayVersion.isEmpty ? "Build \(externalVersionID)" : "Version \(displayVersion)"
+        displayVersion.isEmpty
+            ? String(localized: "Build \(externalVersionID)")
+            : String(localized: "Version \(displayVersion)")
     }
     var releaseDateLabel: String? {
         releaseDate?.formatted(date: .abbreviated, time: .omitted)
@@ -454,7 +461,7 @@ struct StoreError: LocalizedError {
     init(_ error: Error) {
         if error is CancellationError {
             code = .cancelled
-            message = "Cancelled."
+            message = String(localized: "Cancelled.")
             return
         }
         let nsError = error as NSError
@@ -493,7 +500,7 @@ struct LibraryItem: Identifiable, Hashable {
     }
 
     var displayVersion: String {
-        version.isEmpty ? "Unknown version" : version
+        version.isEmpty ? String(localized: "Unknown version") : version
     }
 
     var artworkURL: URL? {
@@ -567,12 +574,12 @@ enum InstallPhase: Equatable {
 
     var title: String {
         switch self {
-        case .idle: return "Not running"
-        case .preparing: return "Preparing"
-        case .ready: return "Ready to install"
-        case .sending(let progress): return "Sending… \(Int(progress * 100))%"
-        case .failed: return "Installation failed"
-        case .stopped: return "Stopped"
+        case .idle: return String(localized: "Not running")
+        case .preparing: return String(localized: "Preparing")
+        case .ready: return String(localized: "Ready to install")
+        case .sending(let progress): return String(localized: "Sending… \(Int(progress * 100))%")
+        case .failed: return String(localized: "Installation failed")
+        case .stopped: return String(localized: "Stopped")
         }
     }
 

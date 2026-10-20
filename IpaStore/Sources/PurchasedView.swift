@@ -9,17 +9,19 @@ struct PurchasedView: View {
         @Bindable var model = model
 
         NavigationStack {
-            ZStack {
-                AppBackground()
+            VStack(spacing: 0) {
+                if model.activeAccount != nil {
+                    platformBar
+                }
                 content
             }
             .navigationTitle("Purchased")
             .searchable(text: $model.ownedSearch,
                         placement: .navigationBarDrawer(displayMode: .automatic),
-                        prompt: "Filter my apps")
+                        prompt: "Search purchased apps")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    platformMenu
+                    AvatarButton()
                 }
             }
             .navigationDestination(for: StoreApp.self) { app in
@@ -36,93 +38,103 @@ struct PurchasedView: View {
         }
     }
 
-    private var platformMenu: some View {
-        Menu {
-            Button {
-                model.setOwnedPlatformFilter(nil)
-            } label: {
-                if model.ownedPlatformFilter == nil {
-                    Label("All platforms", systemImage: "checkmark")
-                } else {
-                    Text("All platforms")
+    private var platformBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                FilterChip(title: String(localized: "All"),
+                           selected: model.ownedPlatformFilter == nil) {
+                    model.setOwnedPlatformFilter(nil)
                 }
-            }
-            Divider()
-            ForEach(StorePlatform.allCases) { platform in
-                Button {
-                    model.setOwnedPlatformFilter(platform)
-                } label: {
-                    if model.ownedPlatformFilter == platform {
-                        Label(platform.title, systemImage: "checkmark")
-                    } else {
-                        Label(platform.title, systemImage: platform.symbol)
+                ForEach(StorePlatform.allCases) { platform in
+                    FilterChip(title: platform.title,
+                               systemImage: platform.symbol,
+                               selected: model.ownedPlatformFilter == platform) {
+                        model.setOwnedPlatformFilter(platform)
                     }
                 }
             }
-        } label: {
-            Image(systemName: "line.3.horizontal.decrease.circle")
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
         }
     }
 
     @ViewBuilder
     private var content: some View {
         if model.activeAccount == nil {
-            EmptyStateView(symbol: "person.crop.circle.badge.plus",
-                           title: "Sign in required",
-                           message: "Your purchased apps are tied to your Apple ID.",
-                           actionTitle: "Sign In",
-                           action: { model.showLogin = true })
+            ContentUnavailableView {
+                Label("Sign In Required", systemImage: "person.crop.circle")
+            } description: {
+                Text("Your purchased apps are tied to your Apple ID.")
+            } actions: {
+                Button("Sign In") { model.showLogin = true }
+                    .buttonStyle(.borderedProminent)
+            }
         } else if model.isLoadingOwned && model.ownedApps.isEmpty {
-            ProgressView("Loading purchase history…")
+            List {
+                ForEach(0..<6, id: \.self) { _ in
+                    SkeletonAppRow()
+                }
+            }
+            .listStyle(.plain)
         } else if let error = model.ownedError, model.ownedApps.isEmpty {
-            EmptyStateView(symbol: model.ownedNeedsSignIn ? "person.crop.circle.badge.exclamationmark" : "exclamationmark.triangle",
-                           title: "Could not load purchases",
-                           message: error,
-                           actionTitle: model.ownedNeedsSignIn ? "Sign In Again" : "Retry",
-                           action: {
-                               if model.ownedNeedsSignIn {
-                                   model.showLogin = true
-                               } else {
-                                   Task { await model.loadOwned(reset: true) }
-                               }
-                           })
+            ContentUnavailableView {
+                Label("Couldn't Load Purchases",
+                      systemImage: model.ownedNeedsSignIn
+                          ? "person.crop.circle.badge.exclamationmark"
+                          : "exclamationmark.triangle")
+            } description: {
+                Text(error)
+            } actions: {
+                Button(model.ownedNeedsSignIn
+                       ? String(localized: "Sign In Again")
+                       : String(localized: "Retry")) {
+                    if model.ownedNeedsSignIn {
+                        model.showLogin = true
+                    } else {
+                        Task { await model.loadOwned(reset: true) }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+            }
         } else if model.visibleOwnedApps.isEmpty {
-            EmptyStateView(symbol: "bag",
-                           title: "No apps",
-                           message: model.ownedSearch.isEmpty
-                               ? "This account owns no apps on the selected platform."
-                               : "Nothing matches “\(model.ownedSearch)”.")
+            if model.ownedSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                ContentUnavailableView {
+                    Label("No Apps", systemImage: "bag")
+                } description: {
+                    Text("This account owns no apps on the selected platform.")
+                }
+            } else {
+                ContentUnavailableView.search(text: model.ownedSearch)
+            }
         } else {
             List {
                 Section {
                     ForEach(model.visibleOwnedApps) { app in
-                        NavigationLink(value: app) {
-                            AppRow(app: app)
-                        }
-                        .task(id: app.appID) {
-                            if app.appID == model.visibleOwnedApps.last?.appID,
-                               model.ownedHasMore {
-                                await model.loadOwned()
+                        AppListRow(app: app, ownedContext: true)
+                            .task(id: app.appID) {
+                                if app.appID == model.visibleOwnedApps.last?.appID,
+                                   model.ownedHasMore {
+                                    await model.loadOwned()
+                                }
                             }
-                        }
                     }
                 } header: {
                     if model.ownedTotal > 0 {
-                        Text("\(model.ownedTotal) apps · \(model.activeAccount?.email ?? "")")
+                        Text(String(localized: "\(model.ownedTotal) apps"))
+                            .font(.caption)
+                            .textCase(nil)
                     }
                 }
                 if model.isLoadingOwned {
-                    Section {
-                        HStack {
-                            Spacer()
-                            ProgressView()
-                            Spacer()
-                        }
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
                     }
+                    .listRowSeparator(.hidden)
                 }
             }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
+            .listStyle(.plain)
             .refreshable {
                 await model.loadOwned(reset: true)
             }

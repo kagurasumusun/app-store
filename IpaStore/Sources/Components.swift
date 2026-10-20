@@ -1,63 +1,443 @@
 // SPDX-License-Identifier: MIT
 
+import ImageIO
 import SwiftUI
 import UIKit
 
-struct AppBackground: View {
-    var body: some View {
-        LinearGradient(
-            colors: [
-                Color(.systemGroupedBackground),
-                Color.indigo.opacity(0.08),
-                Color(.systemGroupedBackground)
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing)
-        .ignoresSafeArea()
+// MARK: - Image loading
+
+/// Shared artwork loader with an in-memory cache and downsampling, so list
+/// rows never flash spinners or decode full-resolution icons.
+final class ArtworkCache: @unchecked Sendable {
+    static let shared = ArtworkCache()
+
+    private let cache = NSCache<NSURL, UIImage>()
+
+    private init() {
+        cache.countLimit = 400
+    }
+
+    func load(_ url: URL, maxPixel: CGFloat) async -> UIImage? {
+        if let cached = cache.object(forKey: url as NSURL) { return cached }
+        guard let (data, _) = try? await URLSession.shared.data(from: url),
+              let image = Self.downsample(data: data, maxPixel: maxPixel) else {
+            return nil
+        }
+        cache.setObject(image, forKey: url as NSURL)
+        return image
+    }
+
+    private static func downsample(data: Data, maxPixel: CGFloat) -> UIImage? {
+        let sourceOptions: [CFString: Any] = [kCGImageSourceShouldCache: false]
+        guard let source = CGImageSourceCreateWithData(data as CFData,
+                                                        sourceOptions as CFDictionary) else {
+            return UIImage(data: data)
+        }
+        let thumbOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(
+            source, 0, thumbOptions as CFDictionary) else {
+            return UIImage(data: data)
+        }
+        return UIImage(cgImage: cgImage)
     }
 }
 
+/// App icon with the system squircle proportions and hairline border,
+/// exactly as the App Store renders artwork.
 struct AppArtwork: View {
     let url: URL?
-    var size: CGFloat = 58
-    var cornerRadius: CGFloat = 14
+    var size: CGFloat = 60
+
+    @State private var image: UIImage?
+
+    private var radius: CGFloat { size * 0.2237 }
 
     var body: some View {
-        AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.2))) { phase in
-            switch phase {
-            case .success(let image):
-                image
+        Group {
+            if let image {
+                Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-            case .failure:
-                placeholder
-            case .empty:
-                placeholder
-                    .overlay(ProgressView().controlSize(.small))
-            @unknown default:
-                placeholder
+            } else {
+                ZStack {
+                    Color(.secondarySystemFill)
+                    Image(systemName: "app.fill")
+                        .font(.system(size: size * 0.44, weight: .regular))
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
         }
-        .shadow(color: .black.opacity(0.16), radius: 6, y: 3)
-    }
-
-    private var placeholder: some View {
-        ZStack {
-            LinearGradient(colors: [.indigo.opacity(0.85), .purple.opacity(0.65)],
-                           startPoint: .topLeading,
-                           endPoint: .bottomTrailing)
-            Image(systemName: "app.dashed")
-                .font(.system(size: size * 0.36, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.9))
+        .task(id: url) {
+            guard let url, image == nil else { return }
+            image = await ArtworkCache.shared.load(url, maxPixel: size * 3)
         }
     }
 }
+
+struct ScreenshotView: View {
+    let url: URL
+    var height: CGFloat = 400
+
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                ZStack {
+                    Color(.secondarySystemFill)
+                    Image(systemName: "photo")
+                        .font(.title2)
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(width: height * 0.46)
+            }
+        }
+        .frame(height: height)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        }
+        .task(id: url) {
+            if image == nil {
+                image = await ArtworkCache.shared.load(url, maxPixel: 1000)
+            }
+        }
+    }
+}
+
+/// Snap-scrolling preview strip, like the App Store product page.
+struct ScreenshotStrip: View {
+    let urls: [URL]
+    var height: CGFloat = 400
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(spacing: 10) {
+                ForEach(Array(urls.enumerated()), id: \.offset) { _, url in
+                    ScreenshotView(url: url, height: height)
+                }
+            }
+            .scrollTargetLayout()
+            .padding(.horizontal, 20)
+        }
+        .scrollTargetBehavior(.viewAligned)
+    }
+}
+
+// MARK: - Ratings
+
+/// Five stars with half-star support, in the App Store's gray.
+struct StarRating: View {
+    let rating: Double
+    var size: CGFloat = 11
+
+    var body: some View {
+        HStack(spacing: 1.5) {
+            ForEach(0..<5, id: \.self) { index in
+                Image(systemName: symbol(for: index))
+                    .font(.system(size: size, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(String(format: "%.1f out of 5 stars", rating))
+    }
+
+    private func symbol(for index: Int) -> String {
+        let value = rating - Double(index)
+        if value >= 0.75 { return "star.fill" }
+        if value >= 0.25 { return "star.leadinghalf.filled" }
+        return "star"
+    }
+}
+
+// MARK: - Download progress and GET
+
+struct CircularProgressRing: View {
+    @Environment(ThemeStore.self) private var theme
+    var fraction: Double
+    var size: CGFloat = 30
+    var lineWidth: CGFloat = 2.5
+    var showsStop = true
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.secondary.opacity(0.25), lineWidth: lineWidth)
+            Circle()
+                .trim(from: 0, to: max(0.02, min(1, fraction)))
+                .stroke(theme.accentColor,
+                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            if showsStop {
+                RoundedRectangle(cornerRadius: size * 0.06, style: .continuous)
+                    .fill(theme.accentColor)
+                    .frame(width: size * 0.3, height: size * 0.3)
+            }
+        }
+        .frame(width: size, height: size)
+        .animation(.linear(duration: 0.2), value: fraction)
+    }
+}
+
+/// The App Store GET pill: price capsule for paid apps, a cloud for owned
+/// apps and older builds, and a cancellable progress ring while a transfer
+/// is running — all without leaving the current screen.
+struct GetButton: View {
+    @Environment(AppModel.self) private var model
+    @Environment(ThemeStore.self) private var theme
+
+    let app: StoreApp
+    var versionID: String? = nil
+    var ownedContext = false
+
+    @State private var tapCount = 0
+
+    private var active: DownloadItem? {
+        model.activeDownload(for: app.appID, versionID: versionID)
+    }
+
+    private var owned: Bool {
+        ownedContext || model.isOwned(app.appID)
+    }
+
+    var body: some View {
+        Group {
+            if let active {
+                Button {
+                    model.cancelDownload(active)
+                } label: {
+                    CircularProgressRing(
+                        fraction: active.state == .processing ? 1 : active.fraction,
+                        size: 30)
+                    .frame(width: 44, height: 32)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(String(localized: "Cancel download"))
+            } else if owned || versionID != nil {
+                Button {
+                    tapCount += 1
+                    model.get(app, versionID: versionID)
+                } label: {
+                    Image(systemName: "icloud.and.arrow.down")
+                        .font(.system(size: 23, weight: .medium))
+                        .foregroundStyle(theme.accentColor)
+                        .frame(width: 44, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(String(localized: "Download"))
+            } else {
+                Button {
+                    tapCount += 1
+                    model.get(app, versionID: versionID)
+                } label: {
+                    Text(app.isFree ? String(localized: "GET") : app.priceLabel)
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(theme.accentColor)
+                        .frame(minWidth: 52)
+                        .padding(.horizontal, 10)
+                        .frame(height: 30)
+                        .background(Capsule().fill(Color(.tertiarySystemFill)))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(String(localized: "Get \(app.name)"))
+            }
+        }
+        .sensoryFeedback(.impact(weight: .light), trigger: tapCount)
+    }
+}
+
+// MARK: - Rows and chips
+
+/// One catalog row, shared by Search and Purchased. The navigation link is
+/// hidden behind the row so the GET button keeps its own tap and no
+/// disclosure chevron shows, like the App Store.
+struct AppListRow: View {
+    let app: StoreApp
+    var ownedContext = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            AppArtwork(url: app.artworkURL, size: 60)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(app.name)
+                    .font(.system(size: 16, weight: .semibold))
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if app.ratingCount > 0 {
+                    HStack(spacing: 4) {
+                        StarRating(rating: app.averageRating, size: 9)
+                        Text(app.ratingCountCompact)
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                }
+            }
+            Spacer(minLength: 8)
+            GetButton(app: app, ownedContext: ownedContext)
+        }
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .background {
+            NavigationLink(value: app) { EmptyView() }
+                .opacity(0)
+        }
+    }
+
+    private var subtitle: String {
+        if ownedContext, let date = app.purchaseDate {
+            return date.formatted(date: .abbreviated, time: .omitted)
+        }
+        if !app.primaryGenre.isEmpty { return app.primaryGenre }
+        return app.artistName.isEmpty ? app.seller : app.artistName
+    }
+}
+
+struct SkeletonAppRow: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .fill(Color(.secondarySystemFill))
+                .frame(width: 60, height: 60)
+            VStack(alignment: .leading, spacing: 7) {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color(.secondarySystemFill))
+                    .frame(width: 150, height: 13)
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color(.secondarySystemFill))
+                    .frame(width: 100, height: 10)
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color(.secondarySystemFill))
+                    .frame(width: 70, height: 8)
+            }
+            Spacer()
+            Capsule()
+                .fill(Color(.secondarySystemFill))
+                .frame(width: 72, height: 30)
+        }
+        .padding(.vertical, 6)
+        .redacted(reason: .placeholder)
+        .accessibilityHidden(true)
+    }
+}
+
+struct FilterChip: View {
+    @Environment(ThemeStore.self) private var theme
+
+    let title: String
+    var systemImage: String?
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 32)
+            .background(Capsule().fill(selected ? theme.accentColor : Color(.secondarySystemFill)))
+            .foregroundStyle(selected ? Color.white : Color.primary)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Bold section title in the App Store product-page style.
+struct SectionHeader: View {
+    let title: LocalizedStringKey
+
+    var body: some View {
+        Text(title)
+            .font(.system(size: 20, weight: .bold))
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// One column of the product-page statistics strip.
+struct StatColumn: View {
+    let value: String
+    let caption: String
+    var rating: Double?
+
+    var body: some View {
+        VStack(spacing: 3) {
+            Text(value)
+                .font(.system(size: 19, weight: .bold))
+                .foregroundStyle(.primary.opacity(0.82))
+                .lineLimit(1)
+            if let rating {
+                StarRating(rating: rating, size: 9)
+            }
+            Text(caption)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(minWidth: 78)
+    }
+}
+
+// MARK: - Account avatar
+
+/// Toolbar avatar that opens the account hub, like the App Store.
+struct AvatarButton: View {
+    @Environment(AppModel.self) private var model
+    @Environment(ThemeStore.self) private var theme
+
+    var body: some View {
+        Button {
+            model.showAccount = true
+        } label: {
+            if let account = model.activeAccount {
+                Text(account.initial)
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 32, height: 32)
+                    .background {
+                        Circle().fill(
+                            LinearGradient(
+                                colors: [theme.accentColor, theme.accentColor.opacity(0.6)],
+                                startPoint: .top, endPoint: .bottom))
+                    }
+            } else {
+                Image(systemName: "person.crop.circle")
+                    .font(.system(size: 27))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityLabel(String(localized: "Account"))
+    }
+}
+
+// MARK: - Small utilities
 
 /// Human-readable name for the platform identifiers the core reports
 /// ("iphone", "appletv", "visionos", …).
@@ -66,26 +446,10 @@ func platformDisplayName(_ identifier: String) -> String {
     case "iphone", "iphoneos": return "iPhone"
     case "ipad", "ipados": return "iPad"
     case "mac", "macos": return "Mac"
-    case "appletv", "tvos": return "tvOS"
-    case "watch", "watchos": return "watchOS"
-    case "xros", "vision", "visionos": return "visionOS"
+    case "appletv", "tvos": return "Apple TV"
+    case "watch", "watchos": return "Apple Watch"
+    case "xros", "vision", "visionos": return "Apple Vision Pro"
     default: return identifier
-    }
-}
-
-struct PlatformChip: View {
-    let title: String
-    var highlighted = false
-
-    var body: some View {
-        Text(title)
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 9)
-            .padding(.vertical, 4)
-            .background(
-                Capsule().fill(highlighted ? Color.indigo.opacity(0.18)
-                                           : Color(.tertiarySystemFill)))
-            .foregroundStyle(highlighted ? Color.indigo : Color.secondary)
     }
 }
 
@@ -102,142 +466,8 @@ struct InfoRow: View {
                 .multilineTextAlignment(.trailing)
                 .textSelection(.enabled)
         }
-        .font(.subheadline)
+        .font(.system(size: 15))
     }
-}
-
-struct EmptyStateView: View {
-    let symbol: String
-    let title: String
-    let message: String
-    var actionTitle: String?
-    var action: (() -> Void)?
-
-    var body: some View {
-        VStack(spacing: 14) {
-            Image(systemName: symbol)
-                .font(.system(size: 46, weight: .thin))
-                .foregroundStyle(.indigo.opacity(0.8))
-            Text(title)
-                .font(.title3.weight(.semibold))
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 340)
-            if let actionTitle, let action {
-                Button(actionTitle, action: action)
-                    .buttonStyle(.borderedProminent)
-                    .padding(.top, 4)
-            }
-        }
-        .padding(28)
-    }
-}
-
-/// Five stars with half-star support.
-struct StarRating: View {
-    let rating: Double
-    var size: CGFloat = 12
-
-    var body: some View {
-        HStack(spacing: 1.5) {
-            ForEach(0..<5, id: \.self) { index in
-                Image(systemName: symbol(for: index))
-                    .font(.system(size: size, weight: .semibold))
-                    .foregroundStyle(Color.orange)
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(String(format: "%.1f out of 5 stars", rating))
-    }
-
-    private func symbol(for index: Int) -> String {
-        let value = rating - Double(index)
-        if value >= 0.75 { return "star.fill" }
-        if value >= 0.25 { return "star.leadinghalf.filled" }
-        return "star"
-    }
-}
-
-struct RatingBadge: View {
-    let app: StoreApp
-
-    var body: some View {
-        VStack(spacing: 2) {
-            Text(app.ratingLabel)
-                .font(.system(size: 22, weight: .bold, design: .rounded))
-            StarRating(rating: app.averageRating, size: 10)
-            Text(app.ratingCountLabel)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .frame(minWidth: 84)
-        .padding(.vertical, 10)
-        .padding(.horizontal, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(.tertiarySystemFill).opacity(0.8)))
-    }
-}
-
-/// Horizontal, paging screenshot strip.
-struct ScreenshotStrip: View {
-    let urls: [URL]
-    var height: CGFloat = 320
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: 12) {
-                ForEach(Array(urls.enumerated()), id: \.offset) { _, url in
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .scaledToFill()
-                        case .failure:
-                            placeholder
-                        case .empty:
-                            placeholder.overlay(ProgressView())
-                        @unknown default:
-                            placeholder
-                        }
-                    }
-                    .frame(width: height * 0.52, height: height)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.08))
-                    }
-                }
-            }
-            .padding(.horizontal, 20)
-        }
-    }
-
-    private var placeholder: some View {
-        ZStack {
-            Color(.secondarySystemBackground)
-            Image(systemName: "photo")
-                .font(.title2)
-                .foregroundStyle(.tertiary)
-        }
-    }
-}
-
-struct CardBackground: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(Color(.secondarySystemGroupedBackground).opacity(0.75)))
-    }
-}
-
-extension View {
-    func card() -> some View { modifier(CardBackground()) }
 }
 
 struct CopyableIdentifier: View {
@@ -268,53 +498,10 @@ struct CopyableIdentifier: View {
     }
 }
 
-/// One catalog row, shared by Search and Purchased.
-struct AppRow: View {
-    let app: StoreApp
-
-    var body: some View {
-        HStack(spacing: 14) {
-            AppArtwork(url: app.artworkURL, size: 58)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(app.name)
-                    .font(.headline)
-                    .lineLimit(1)
-                Text(app.artistName.isEmpty ? app.seller : app.artistName)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                HStack(spacing: 6) {
-                    if app.ratingCount > 0 {
-                        StarRating(rating: app.averageRating, size: 9)
-                        Text(app.ratingLabel)
-                        Text("·")
-                    }
-                    Text(app.primaryGenre)
-                    if app.byteSize > 0 {
-                        Text("·")
-                        Text(app.sizeLabel)
-                    }
-                }
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            Text(app.priceLabel)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(app.isFree ? Color.indigo : Color.secondary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Capsule().fill(Color(.tertiarySystemFill)))
-        }
-        .padding(.vertical, 6)
-        .contentShape(Rectangle())
-    }
-}
-
-/// Storefront chooser used by the search toolbar.
+/// Storefront chooser presented from the search controls.
 struct RegionPickerView: View {
     @Environment(AppModel.self) private var model
+    @Environment(ThemeStore.self) private var theme
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
 
@@ -338,24 +525,29 @@ struct RegionPickerView: View {
                         Text(storefront.flag)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(storefront.name)
+                                .foregroundStyle(.primary)
                             Text("\(storefront.code) · \(storefront.currency)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
                         if storefront.code == model.region {
-                            Image(systemName: "checkmark").foregroundStyle(.indigo)
+                            Image(systemName: "checkmark")
+                                .fontWeight(.semibold)
+                                .foregroundStyle(theme.accentColor)
                         }
                     }
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
-            .navigationTitle("Storefront")
+            .listStyle(.plain)
+            .navigationTitle(String(localized: "Storefront"))
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $query, prompt: "Country or region")
+            .searchable(text: $query, prompt: String(localized: "Country or region"))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(String(localized: "Cancel")) { dismiss() }
                 }
             }
         }

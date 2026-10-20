@@ -5,13 +5,16 @@ import SwiftUI
 @main
 struct IpaStoreApp: App {
     @State private var model = AppModel()
+    @State private var theme = ThemeStore()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(model)
-                .tint(.indigo)
+                .environment(theme)
+                .tint(theme.accentColor)
+                .preferredColorScheme(theme.colorScheme)
                 .onOpenURL { url in
                     // "Open in IPAShelf" from Files / share sheets.
                     if url.pathExtension.lowercased() == "ipa" {

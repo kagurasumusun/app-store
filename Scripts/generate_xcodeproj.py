@@ -88,6 +88,10 @@ def collect() -> list[FileRef]:
     if privacy.exists():
         files.append(FileRef(privacy, "text.xml", "resources", "resources"))
 
+    localizable = ROOT / "IpaStore" / "Resources" / "Localizable.xcstrings"
+    if localizable.exists():
+        files.append(FileRef(localizable, "text.json.xcstrings", "resources", "resources"))
+
     files.append(FileRef(ROOT / "Config" / "Info.plist", "text.plist.xml", "config", None))
     files.append(FileRef(ROOT / "Config" / "IpaStore.entitlements",
                          "text.plist.entitlements", "config", None))
@@ -424,6 +428,7 @@ def main() -> None:
 			knownRegions = (
 				en,
 				Base,
+				ja,
 			);
 			mainGroup = {groups['main']};
 			minimizedProjectReferenceProxies = 1;
