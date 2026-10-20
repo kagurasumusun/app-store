@@ -116,11 +116,11 @@ openssl PEM validation: ok
 | plist / IPA | Python `plistlib` による再パース | ✅ |
 | OTA マニフェスト | `plistlib` で構造検証 | ✅ |
 | X.509 / SPKI | `openssl x509` / `openssl pkey` で DER を解析 | ✅ |
-| Xcode プロジェクト | `pbxproj` ライブラリでパース + 参照解決 | ✅ 71 参照すべて解決 |
-| Swift 16 ファイル | tree-sitter-swift による構文解析 | ✅ エラー 0 |
-| ブリッジ API | Swift の呼び出しと ObjC セレクタの照合 | ✅ 16 箇所一致 |
+| Xcode プロジェクト | `pbxproj` ライブラリでパース + 参照解決 | ✅ 70 参照すべて解決 |
+| Swift 15 ファイル | tree-sitter-swift による構文解析 | ✅ エラー 0 |
+| ブリッジ API | Swift の呼び出しと ObjC セレクタの照合 | ✅ 13 箇所一致 |
 | ObjC++ 7 ファイル | Xcode 27（iOS 27 SDK）で実コンパイル | ✅ |
-| 実機向け .ipa | `Scripts/package_ipa.sh` でパッケージ + 構造検証 | ✅ arm64 / Release |
+| 実機向け .ipa | `Scripts/package_ipa.sh` + `Scripts/verify_ipa.py` で再検証 | ✅ `IpaStore-0.1.0.ipa` / 5.0 MB |
 
 GitHub Actions の `apple` ジョブは macOS 27 / Xcode 27 上で次を実行します。
 
@@ -151,8 +151,23 @@ bash Scripts/package_ipa.sh
 
 `package_ipa.sh` はパッケージ前に arm64 スライスであること、シミュレータ用
 バイナリでないこと（`vtool -show-build`）、`MinimumOSVersion`、Bundle ID を
-検証し、作成後に `Payload/IpaStore.app/IpaStore` と `Info.plist` の存在、
-および取り出した `Info.plist` の Bundle ID を再確認します。
+検証し、作成後は `Scripts/verify_ipa.py` が**アーカイブそのもの**を
+Python の標準ライブラリだけで読み直します。
+
+`verify_ipa.py` の検査項目:
+
+| 検査 | 内容 |
+| --- | --- |
+| レイアウト | `Payload/<App>.app/` のみ（`iTunesMetadata.plist` と `SwiftSupport/` は許可）、パストラバーサル禁止 |
+| バンドル | `Payload/` 直下の `.app` はちょうど 1 つ |
+| Info.plist | 展開してパース、`CFBundleIdentifier` / `CFBundleExecutable` / `CFBundleShortVersionString` / `MinimumOSVersion` の存在、Bundle ID の一致 |
+| 実行ファイル | Mach-O（thin / fat 両対応）を解析し、arm64 を含み x86_64・i386 を含まないこと |
+| プラットフォーム | `DTPlatformName` が `iphoneos` |
+
+`python3 Scripts/verify_ipa.py --self-test` は正常系 1 件と異常系 8 件
+（Bundle ID 不一致、x86_64 スライス、armv7 のみ、シミュレータ向け、
+未知のエントリ、zip slip、zip でないファイルなど）を一時ディレクトリで
+生成して自己検査します。`Scripts/check_static.sh` から毎回実行されます。
 
 > **署名について**: CI には署名証明書がないため、生成される .ipa の中身は
 > 未署名です。実機に入れる場合は `DEVELOPMENT_TEAM=XXXXXXXXXX \

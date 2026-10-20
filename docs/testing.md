@@ -7,7 +7,7 @@ IPAShelf のテストは 3 層 + 成果物検証に分かれています。
 | コア | `bash Scripts/build_core.sh` | C++ の 362 チェック + 外部ツールによる検証 |
 | 静的 | `bash Scripts/check_static.sh` | Swift 構文、Objective-C ブリッジ API、pbxproj、括弧 |
 | ビルド | `bash Scripts/build_app.sh --device --configuration Release` | iOS 27 SDK での実機 arm64 ビルド |
-| 成果物 | `bash Scripts/package_ipa.sh` | 実機用 .ipa の生成と構造検証 |
+| 成果物 | `bash Scripts/package_ipa.sh` | 実機用 .ipa の生成（`verify_ipa.py` で再検証） |
 | 手動 | `docs/testing.md` のチェックリスト | 実機でのサインイン・ダウンロード・インストール |
 
 ```bash
@@ -15,6 +15,13 @@ bash Scripts/build_core.sh
 bash Scripts/check_static.sh
 bash Scripts/build_app.sh --device --configuration Release
 bash Scripts/package_ipa.sh
+```
+
+成果物の検査だけを単体で実行する場合:
+
+```bash
+python3 Scripts/verify_ipa.py --self-test                 # 検証器の自己テスト
+python3 Scripts/verify_ipa.py build/artifacts/IpaStore-0.1.0.ipa
 ```
 
 サニタイザ付き:
