@@ -145,6 +145,11 @@ def parse_headers() -> dict[str, dict[str, set[tuple[str, ...]]]]:
                     selector = re.split(r"\s+", without_attr.strip())[0]
                 name, labels = selector_to_swift(selector, swift_name)
                 entry["methods"].add(tuple([name] + labels))
+                # A trailing `NSError **` parameter makes the method `throws`,
+                # so Swift drops that label entirely:
+                # `fooWithError:` -> `foo() throws`.
+                if labels and labels[-1] == "error":
+                    entry["methods"].add(tuple([name] + labels[:-1]))
     return api
 
 

@@ -66,15 +66,17 @@ typedef NS_ENUM(NSInteger, IPInstallServerState) {
 @property (nonatomic, copy, nullable) void (^stateHandler)(
     IPInstallServerState state, double progress, NSString *message);
 
-- (BOOL)startWithError:(NSError *_Nullable *_Nullable)error
-    NS_SWIFT_NAME(start());
+/// Imports as `start()` (the `...WithError:` suffix becomes `throws`).
+- (BOOL)startWithError:(NSError *_Nullable *_Nullable)error;
 - (void)stop;
 
 /// Generates (or loads) the root certificate without starting a server. Used
 /// by Settings to show the fingerprint and export the profile.
+/// Imports as `prepareCertificate()` (the `...WithError:` suffix becomes
+/// `throws`). Do not add NS_SWIFT_NAME here: the importer counts the error
+/// parameter, so a zero-argument Swift name is rejected.
 + (IPInstallCertificate *)prepareCertificateWithError:
-    (NSError *_Nullable *_Nullable)error
-    NS_SWIFT_NAME(prepareCertificate());
+    (NSError *_Nullable *_Nullable)error;
 
 @end
 
