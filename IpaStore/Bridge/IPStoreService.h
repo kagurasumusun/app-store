@@ -75,23 +75,6 @@ FOUNDATION_EXPORT NSErrorDomain const IPStoreErrorDomain;
 @property (nonatomic, copy, readonly, nullable) NSDate *purchaseDate NS_SWIFT_NAME(purchaseDate);
 @end
 
-/// One customer review from Apple's public review feed.
-@interface IPStoreReview : NSObject
-@property (nonatomic, copy, readonly) NSString *reviewID NS_SWIFT_NAME(reviewID);
-@property (nonatomic, copy, readonly) NSString *author;
-@property (nonatomic, copy, readonly) NSString *title;
-@property (nonatomic, copy, readonly) NSString *body;
-@property (nonatomic, copy, readonly) NSString *version;
-@property (nonatomic, copy, readonly) NSString *updated;
-@property (nonatomic, readonly) NSInteger rating;
-@end
-
-@interface IPStoreReviewsPage : NSObject
-@property (nonatomic, copy, readonly) NSArray<IPStoreReview *> *reviews;
-@property (nonatomic, readonly) NSInteger page;
-@property (nonatomic, readonly) BOOL hasMore;
-@end
-
 /// A storefront the user can search in.
 @interface IPStoreStorefront : NSObject
 @property (nonatomic, copy, readonly) NSString *code;
@@ -255,13 +238,6 @@ FOUNDATION_EXPORT NSErrorDomain const IPStoreErrorDomain;
                  completion:(void (^)(IPStoreOwnedAppsPage *_Nullable page,
                                       NSError *_Nullable error))completion
     NS_SWIFT_NAME(ownedApps(account:platform:page:limit:completion:));
-
-- (void)reviewsForAppID:(long long)appID
-                 region:(NSString *)region
-                   page:(NSInteger)page
-             completion:(void (^)(IPStoreReviewsPage *_Nullable page,
-                                  NSError *_Nullable error))completion
-    NS_SWIFT_NAME(reviews(appID:region:page:completion:));
 
 /// Purchases the app when needed and downloads a patched IPA. Progress is
 /// reported on an internal queue; hop to the main actor before touching UI.

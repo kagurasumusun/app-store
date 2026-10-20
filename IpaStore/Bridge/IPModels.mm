@@ -116,43 +116,6 @@ static NSArray<NSString *> *IPPlatforms(const std::vector<ipashelf::Platform> &p
 
 @end
 
-@implementation IPStoreReview
-
-- (instancetype)initWithReview:(const ipashelf::Review &)review {
-  self = [super init];
-  if (self != nil) {
-    _reviewID = IPString(review.id);
-    _author = IPString(review.author);
-    _title = IPString(review.title);
-    _body = IPString(review.body);
-    _version = IPString(review.version);
-    _updated = IPString(review.updated);
-    _rating = static_cast<NSInteger>(review.rating);
-  }
-  return self;
-}
-
-@end
-
-@implementation IPStoreReviewsPage
-
-- (instancetype)initWithPage:(const ipashelf::ReviewsPage &)page {
-  self = [super init];
-  if (self != nil) {
-    NSMutableArray<IPStoreReview *> *reviews =
-        [NSMutableArray arrayWithCapacity:page.reviews.size()];
-    for (const auto &review : page.reviews) {
-      [reviews addObject:[[IPStoreReview alloc] initWithReview:review]];
-    }
-    _reviews = reviews;
-    _page = static_cast<NSInteger>(page.page);
-    _hasMore = page.has_more;
-  }
-  return self;
-}
-
-@end
-
 @implementation IPStoreStorefront
 
 - (instancetype)initWithStorefront:(const ipashelf::Storefront &)storefront {

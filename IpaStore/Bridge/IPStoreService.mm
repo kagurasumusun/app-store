@@ -698,28 +698,6 @@ static ipashelf::StoreClient MakeStoreClient(void) {
   });
 }
 
-- (void)reviewsForAppID:(long long)appID
-                 region:(NSString *)region
-                   page:(NSInteger)page
-             completion:(void (^)(IPStoreReviewsPage *_Nullable,
-                                  NSError *_Nullable))completion {
-  dispatch_async(_queue, ^{
-    ipashelf::StoreClient client = MakeStoreClient();
-    ipashelf::CancellationSource source;
-    auto result = client.reviews(
-        appID,
-        TrimmedRegion(region, self->_accountStore.activeAccount).UTF8String ?: "us",
-        static_cast<int>(std::max<NSInteger>(page, 1)), source.token());
-    dispatch_async(dispatch_get_main_queue(), ^{
-      if (!result) {
-        completion(nil, MakeError(result.error()));
-        return;
-      }
-      completion([[IPStoreReviewsPage alloc] initWithPage:result.value()], nil);
-    });
-  });
-}
-
 - (void)lookupAppID:(long long)appID
            bundleID:(nullable NSString *)bundleID
              region:(NSString *)region

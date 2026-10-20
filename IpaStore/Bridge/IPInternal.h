@@ -82,28 +82,6 @@ NS_ASSUME_NONNULL_BEGIN
 #endif
 @end
 
-@interface IPStoreReview ()
-@property (nonatomic, copy, readwrite) NSString *reviewID;
-@property (nonatomic, copy, readwrite) NSString *author;
-@property (nonatomic, copy, readwrite) NSString *title;
-@property (nonatomic, copy, readwrite) NSString *body;
-@property (nonatomic, copy, readwrite) NSString *version;
-@property (nonatomic, copy, readwrite) NSString *updated;
-@property (nonatomic, readwrite) NSInteger rating;
-#ifdef __cplusplus
-- (instancetype)initWithReview:(const ipashelf::Review &)review;
-#endif
-@end
-
-@interface IPStoreReviewsPage ()
-@property (nonatomic, copy, readwrite) NSArray<IPStoreReview *> *reviews;
-@property (nonatomic, readwrite) NSInteger page;
-@property (nonatomic, readwrite) BOOL hasMore;
-#ifdef __cplusplus
-- (instancetype)initWithPage:(const ipashelf::ReviewsPage &)page;
-#endif
-@end
-
 @interface IPStoreStorefront ()
 @property (nonatomic, copy, readwrite) NSString *code;
 @property (nonatomic, copy, readwrite) NSString *name;

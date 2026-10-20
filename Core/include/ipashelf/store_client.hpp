@@ -124,11 +124,6 @@ class StoreClient {
   [[nodiscard]] Result<SearchResults> search(const SearchQuery& query,
                                              const CancellationToken& token);
 
-  /// Reads one page of customer reviews from Apple's public review feed.
-  [[nodiscard]] Result<ReviewsPage> reviews(std::int64_t app_id,
-                                            std::string_view region, int page,
-                                            const CancellationToken& token);
-
   [[nodiscard]] Result<App> lookup(std::int64_t app_id,
                                    std::string_view bundle_id,
                                    std::string_view region, Platform platform,
@@ -251,9 +246,5 @@ class StoreClient {
 
 /// Builds the public search URL so the UI and tests can share one encoder.
 [[nodiscard]] std::string build_search_url(const SearchQuery& query);
-
-/// Parses a review feed document. `page` is echoed in the result.
-[[nodiscard]] Result<ReviewsPage> parse_reviews_document(std::string_view body,
-                                                         int page = 1);
 
 }  // namespace ipashelf

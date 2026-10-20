@@ -1921,7 +1921,7 @@ void test_map_store_failure() {
 
 
 // ---------------------------------------------------------------------------
-// Storefronts, rich catalog data, filters and reviews
+// Storefronts, rich catalog data and filters
 // ---------------------------------------------------------------------------
 
 void test_storefronts() {
@@ -2070,78 +2070,6 @@ void test_search_filters() {
               "name sort last");
   }
 }
-
-void test_reviews() {
-  using namespace ipashelf;
-  const std::string feed =
-      "{\"feed\":{\"link\":[{\"attributes\":{\"rel\":\"next\","
-      "\"href\":\"https://itunes.apple.com/jp/rss/customerreviews/page=2/"
-      "id=123456789/sortby=mostrecent/json\"}}],\"entry\":["
-      "{\"id\":{\"label\":\"1\"},\"author\":{\"name\":{\"label\":\"Aki\"}},"
-      "\"im:rating\":{\"label\":\"5\"},\"im:version\":{\"label\":\"4.2.0\"},"
-      "\"title\":{\"label\":\"Great\"},\"content\":{\"label\":\"Works well\"},"
-      "\"updated\":{\"label\":\"2026-09-10T00:00:00-07:00\"}},"
-      "{\"id\":{\"label\":\"2\"},\"author\":{\"name\":{\"label\":\"Bo\"}},"
-      "\"im:rating\":{\"label\":\"3\"},\"im:version\":{\"label\":\"4.1.0\"},"
-      "\"title\":{\"label\":\"Okay\"},\"content\":{\"label\":\"Fine\"},"
-      "\"updated\":{\"label\":\"2026-09-09T00:00:00-07:00\"}}]}}";
-  auto page = parse_reviews_document(feed, 1);
-  expect(page.has_value(), "review feed parses");
-  if (page) {
-    expect_eq(page.value().reviews.size(), std::size_t{2}, "two reviews");
-    expect(page.value().has_more, "next page detected");
-    expect_eq(page.value().reviews.front().author, std::string("Aki"),
-              "review author");
-    expect_eq(page.value().reviews.front().rating, 5, "review rating");
-    expect_eq(page.value().reviews.front().version, std::string("4.2.0"),
-              "review version");
-    expect_eq(page.value().reviews.front().title, std::string("Great"),
-              "review title");
-  }
-
-  const std::string single =
-      "{\"feed\":{\"entry\":{\"id\":{\"label\":\"9\"},\"author\":{\"name\":"
-      "{\"label\":\"Solo\"}},\"im:rating\":{\"label\":\"4\"},\"title\":"
-      "{\"label\":\"One\"},\"content\":{\"label\":\"Only review\"}}}}";
-  auto one = parse_reviews_document(single);
-  expect(one.has_value(), "single review object parses");
-  if (one) {
-    expect_eq(one.value().reviews.size(), std::size_t{1}, "single review");
-    expect(!one.value().has_more, "no next page");
-  }
-
-  expect(!parse_reviews_document("{}").has_value(), "missing feed rejected");
-  expect(!parse_reviews_document("not json").has_value(), "bad JSON rejected");
-
-  FakeTransport transport;
-  StoreConfiguration configuration;
-  configuration.sleep = [](std::chrono::milliseconds) {};
-  StoreClient client(transport, configuration);
-  CancellationSource source;
-  transport.enqueue_response(200, feed);
-  auto live = client.reviews(123456789, "JP", 1, source.token());
-  expect(live.has_value(), "reviews request succeeds");
-  if (live) expect_eq(live.value().reviews.size(), std::size_t{2}, "reviews");
-  expect(!transport.requests.empty(), "review request captured");
-  if (!transport.requests.empty()) {
-    const std::string& url = transport.requests.front().url;
-    expect(url.find("/jp/rss/customerreviews/page=1/id=123456789/") !=
-               std::string::npos,
-           "review URL path");
-    expect(url.find("sortby=mostrecent/json") != std::string::npos,
-           "review URL sort");
-  }
-  transport.enqueue_response(404, "");
-  auto missing = client.reviews(123456789, "jp", 1, source.token());
-  expect(!missing.has_value(), "missing review feed is an error");
-  if (!missing) {
-    expect(missing.error().code == ErrorCode::kParse, "missing feed code");
-  }
-}
-
-// ---------------------------------------------------------------------------
-// OTA manifest and install page
-// ---------------------------------------------------------------------------
 
 void test_ota_manifest(const std::string& fixtures) {
   using namespace ipashelf;
@@ -3104,7 +3032,6 @@ int main(int argc, char** argv) {
   test_storefronts();
   test_app_details();
   test_search_filters();
-  test_reviews();
   test_ota_manifest(fixtures);
   test_http_parser();
   test_ranges();

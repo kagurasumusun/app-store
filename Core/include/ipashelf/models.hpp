@@ -76,23 +76,6 @@ struct App {
   std::int64_t purchase_date_unix = 0;
 };
 
-/// A customer review from Apple's public review feed.
-struct Review {
-  std::string id;
-  std::string author;
-  std::string title;
-  std::string body;
-  std::string version;
-  std::string updated;
-  int rating = 0;
-};
-
-struct ReviewsPage {
-  int page = 1;
-  bool has_more = false;
-  std::vector<Review> reviews;
-};
-
 /// A search request with the filters the UI exposes.
 struct SearchQuery {
   std::string term;
