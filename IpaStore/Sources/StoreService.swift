@@ -316,6 +316,10 @@ final class StoreService: @unchecked Sendable {
         bridge.cancelDownloads()
     }
 
+    func cancelDownload(appID: Int64, externalVersionID: String?) {
+        bridge.cancelDownload(appID: appID, externalVersionID: externalVersionID)
+    }
+
     func libraryDirectory() -> URL {
         URL(fileURLWithPath: IPStoreLibraryDirectory(), isDirectory: true)
     }

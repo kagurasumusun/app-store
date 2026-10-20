@@ -130,7 +130,15 @@ NSString *SafeFilename(NSString *value) {
 @property (nonatomic, copy, nullable) NSString *downloadedPath;
 @property (nonatomic, strong, nullable) NSError *failureError;
 @property (nonatomic, copy) NSString *resumeKey;
-@property (nonatomic, strong) NSURLSessionDownloadTask *task;
+@property (nonatomic, strong, nullable) NSURLSessionDownloadTask *task;
+@property (nonatomic, strong) NSURL *url;
+@property (nonatomic, copy) NSDictionary<NSString *, NSString *> *headers;
+/// Set when the user (rather than the system) asked this transfer to stop.
+/// NSURLSession reports both as NSURLErrorCancelled; the UI may only call
+/// the user-initiated case a cancellation.
+@property (nonatomic) BOOL userCancelled;
+@property (nonatomic) BOOL usedResumeData;
+@property (nonatomic) BOOL restartedAfterResumeFailure;
 @end
 
 @implementation IPDownloadContext
@@ -141,24 +149,37 @@ NSString *SafeFilename(NSString *value) {
 /// Downloads `url`, resuming from any partial data previously saved under
 /// `resumeKey` (for example "<appID>-<externalVersionID>"). Partial data
 /// survives cancellation and app relaunches; it is discarded once the
-/// download completes or the server rejects the resumed request.
+/// download completes, expires, or turns out to be unusable.
 - (void)downloadURL:(NSURL *)url
              headers:(NSDictionary<NSString *, NSString *> *)headers
            resumeKey:(NSString *)resumeKey
             progress:(void (^)(double, long long, long long))progress
           completion:(void (^)(NSString *_Nullable, NSError *_Nullable))completion;
 - (void)cancelAll;
+- (void)cancelDownloadForAppID:(long long)appID
+           externalVersionID:(nullable NSString *)externalVersionID;
 @end
 
 @interface IPDownloadCenter ()
 - (nullable IPDownloadContext *)contextForTask:(NSURLSessionTask *)task;
 - (void)finishTask:(NSURLSessionTask *)task error:(nullable NSError *)error;
+- (void)startTaskForContext:(IPDownloadContext *)context
+               resumeData:(nullable NSData *)resumeData;
+- (BOOL)consumeCancelMarkForKey:(NSString *)resumeKey;
 @end
 
 @implementation IPDownloadCenter {
   NSURLSession *_session;
   NSOperationQueue *_delegateQueue;
   NSMutableDictionary<NSNumber *, IPDownloadContext *> *_contexts;
+  /// Downloads the user cancelled before their transfer started (while the
+  /// store offer was still being negotiated). Full resume keys, plus
+  /// "<appID>-" prefixes for "latest" downloads whose concrete version is
+  /// only known once the offer returns. A match is consumed by the next
+  /// download that starts under the key, so a mark never cancels a later,
+  /// deliberate retry.
+  NSMutableSet<NSString *> *_cancelledKeys;
+  NSMutableSet<NSString *> *_cancelledPrefixes;
   NSLock *_lock;
 }
 
@@ -180,9 +201,24 @@ NSString *SafeFilename(NSString *value) {
           [SafeFilename(key) stringByAppendingPathExtension:@"resumedata"]];
 }
 
+// Resume blobs embed the signed asset URL, which expires; resuming a stale
+// blob asks the server for ranges of a dead URL. Six hours is generous.
++ (NSTimeInterval)resumeDataMaxAge {
+  return 6 * 60 * 60;
+}
+
 - (nullable NSData *)resumeDataForKey:(NSString *)key {
   if (key.length == 0) return nil;
-  return [NSData dataWithContentsOfFile:[IPDownloadCenter resumeDataPathForKey:key]];
+  NSString *path = [IPDownloadCenter resumeDataPathForKey:key];
+  NSDictionary<NSFileAttributeKey, id> *attributes =
+      [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+  NSDate *modified = attributes[NSFileModificationDate];
+  if (modified == nil ||
+      -modified.timeIntervalSinceNow > [IPDownloadCenter resumeDataMaxAge]) {
+    [self discardResumeDataForKey:key];
+    return nil;
+  }
+  return [NSData dataWithContentsOfFile:path];
 }
 
 - (void)storeResumeData:(NSData *)data forKey:(NSString *)key {
@@ -210,6 +246,8 @@ NSString *SafeFilename(NSString *value) {
   self = [super init];
   if (self != nil) {
     _contexts = [NSMutableDictionary dictionary];
+    _cancelledKeys = [NSMutableSet set];
+    _cancelledPrefixes = [NSMutableSet set];
     _lock = [[NSLock alloc] init];
     _delegateQueue = [[NSOperationQueue alloc] init];
     _delegateQueue.maxConcurrentOperationCount = 1;
@@ -232,24 +270,40 @@ NSString *SafeFilename(NSString *value) {
            resumeKey:(NSString *)resumeKey
             progress:(void (^)(double, long long, long long))progress
           completion:(void (^)(NSString *_Nullable, NSError *_Nullable))completion {
-  NSURLSessionDownloadTask *task = nil;
-  NSData *resumeData = [self resumeDataForKey:resumeKey];
-  if (resumeData.length > 0) {
-    task = [_session downloadTaskWithResumeData:resumeData];
-  }
-  if (task == nil) {
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
-    request.HTTPMethod = @"GET";
-    for (NSString *name in headers) {
-      [request setValue:headers[name] forHTTPHeaderField:name];
-    }
-    task = [_session downloadTaskWithRequest:request];
+  NSString *key = resumeKey ?: @"";
+  if ([self consumeCancelMarkForKey:key]) {
+    completion(nil, MakeErrorCode(IPStoreErrorCancelled,
+                                  @"The download was cancelled."));
+    return;
   }
   IPDownloadContext *context = [[IPDownloadContext alloc] init];
   context.progress = progress;
   context.completion = completion;
-  context.resumeKey = resumeKey ?: @"";
+  context.resumeKey = key;
+  context.url = url;
+  context.headers = headers ?: @{};
+  [self startTaskForContext:context
+               resumeData:[self resumeDataForKey:key]];
+}
+
+- (void)startTaskForContext:(IPDownloadContext *)context
+               resumeData:(NSData *)resumeData {
+  NSURLSessionDownloadTask *task = nil;
+  if (resumeData.length > 0) {
+    task = [_session downloadTaskWithResumeData:resumeData];
+  }
+  context.usedResumeData = task != nil;
+  if (task == nil) {
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:context.url];
+    request.HTTPMethod = @"GET";
+    for (NSString *name in context.headers) {
+      [request setValue:context.headers[name] forHTTPHeaderField:name];
+    }
+    task = [_session downloadTaskWithRequest:request];
+  }
   context.task = task;
+  context.failureError = nil;
+  context.downloadedPath = nil;
   [_lock lock];
   _contexts[@(task.taskIdentifier)] = context;
   [_lock unlock];
@@ -281,25 +335,62 @@ NSString *SafeFilename(NSString *value) {
     effectiveError = MakeErrorCode(IPStoreErrorStorage,
                                    @"The download finished without a file.");
   }
-  // Interrupted transfers may carry fresh resume data; keep it so the next
-  // attempt continues where this one stopped. A completed HTTP error means
-  // the saved state (or its signed URL) is stale, so drop it instead.
-  if (context.failureError == nil) {
-    NSData *resumeData = error.userInfo[NSURLSessionDownloadTaskResumeData];
-    if ([resumeData isKindOfClass:[NSData class]]) {
-      [self storeResumeData:resumeData forKey:context.resumeKey];
-    }
-  } else {
+
+  const BOOL systemCancelled =
+      error != nil && [error.domain isEqualToString:NSURLErrorDomain] &&
+      error.code == NSURLErrorCancelled;
+
+  // The poisoned-resume-blob failure: a task created from resume data can
+  // finish NSURLErrorCancelled immediately, with nobody cancelling it
+  // (notably after relaunch with a default-configured session). Reporting
+  // that as "cancelled" both lies to the user and — because the blob was
+  // kept — repeats identically on every retry. Drop the blob and restart
+  // once from scratch instead.
+  if (systemCancelled && !context.userCancelled && context.usedResumeData &&
+      !context.restartedAfterResumeFailure && context.failureError == nil) {
+    context.restartedAfterResumeFailure = YES;
     [self discardResumeDataForKey:context.resumeKey];
+    if (context.progress != nil) context.progress(0, 0, 0);
+    [self startTaskForContext:context resumeData:nil];
+    return;
+  }
+
+  // Resume-data bookkeeping. A completed HTTP error means the signed URL
+  // is stale: drop the blob. An interruption may carry a fresh blob worth
+  // keeping; when a resume-based task dies without producing one the old
+  // blob is useless and must go, or every retry fails the same way.
+  if (context.failureError != nil) {
+    [self discardResumeDataForKey:context.resumeKey];
+  } else {
+    NSData *resumeData = error.userInfo[NSURLSessionDownloadTaskResumeData];
+    if ([resumeData isKindOfClass:[NSData class]] && resumeData.length > 0) {
+      [self storeResumeData:resumeData forKey:context.resumeKey];
+    } else if (context.usedResumeData) {
+      [self discardResumeDataForKey:context.resumeKey];
+    }
   }
   if (context.completion == nil) return;
-  if (effectiveError.code == NSURLErrorCancelled &&
-      [effectiveError.domain isEqualToString:NSURLErrorDomain]) {
-    context.completion(nil, MakeErrorCode(IPStoreErrorCancelled,
-                                          @"The download was cancelled."));
-  } else {
-    context.completion(nil, effectiveError);
+
+  NSError *report = effectiveError;
+  if (systemCancelled && context.failureError == nil) {
+    report = context.userCancelled
+                 ? MakeErrorCode(IPStoreErrorCancelled,
+                                 @"The download was cancelled.")
+                 : MakeErrorCode(IPStoreErrorNetwork,
+                                 @"The download was interrupted.");
+  } else if (![report.domain isEqualToString:IPStoreErrorDomain]) {
+    // Normalize raw NSURLError failures into the store error domain so
+    // the UI taxonomy (retry, token refresh, offline hints) stays sane.
+    report = [NSError errorWithDomain:IPStoreErrorDomain
+                                   code:IPStoreErrorNetwork
+                               userInfo:@{
+                                 NSLocalizedDescriptionKey :
+                                     effectiveError.localizedDescription
+                                         ?: @"The download failed.",
+                                 NSUnderlyingErrorKey : effectiveError,
+                               }];
   }
+  context.completion(nil, report);
 }
 
 - (void)URLSession:(NSURLSession *)session
@@ -380,6 +471,7 @@ NSString *SafeFilename(NSString *value) {
   NSArray<IPDownloadContext *> *contexts = _contexts.allValues;
   [_lock unlock];
   for (IPDownloadContext *context in contexts) {
+    context.userCancelled = YES;
     // Preserve partial data so a later attempt can resume instead of
     // starting the (potentially multi-gigabyte) package over.
     [context.task cancelByProducingResumeData:^(NSData *_Nullable resumeData) {
@@ -388,6 +480,53 @@ NSString *SafeFilename(NSString *value) {
       }
     }];
   }
+}
+
+- (void)cancelDownloadForAppID:(long long)appID
+           externalVersionID:(NSString *)externalVersionID {
+  NSString *prefix = [NSString stringWithFormat:@"%lld-", appID];
+  NSString *exact = externalVersionID.length > 0
+                        ? [prefix stringByAppendingString:externalVersionID]
+                        : nil;
+  [_lock lock];
+  if (exact != nil) {
+    [_cancelledKeys addObject:exact];
+  } else {
+    [_cancelledPrefixes addObject:prefix];
+  }
+  NSArray<IPDownloadContext *> *contexts = _contexts.allValues;
+  [_lock unlock];
+  for (IPDownloadContext *context in contexts) {
+    const BOOL match = exact != nil
+                           ? [context.resumeKey isEqualToString:exact]
+                           : [context.resumeKey hasPrefix:prefix];
+    if (!match) continue;
+    context.userCancelled = YES;
+    [context.task cancelByProducingResumeData:^(NSData *_Nullable resumeData) {
+      if (resumeData.length > 0) {
+        [self storeResumeData:resumeData forKey:context.resumeKey];
+      }
+    }];
+  }
+}
+
+- (BOOL)consumeCancelMarkForKey:(NSString *)resumeKey {
+  if (resumeKey.length == 0) return NO;
+  [_lock lock];
+  BOOL marked = [_cancelledKeys containsObject:resumeKey];
+  if (marked) {
+    [_cancelledKeys removeObject:resumeKey];
+  } else {
+    for (NSString *prefix in [_cancelledPrefixes copy]) {
+      if ([resumeKey hasPrefix:prefix]) {
+        [_cancelledPrefixes removeObject:prefix];
+        marked = YES;
+        break;
+      }
+    }
+  }
+  [_lock unlock];
+  return marked;
 }
 
 @end
@@ -1044,6 +1183,12 @@ static ipashelf::StoreClient MakeStoreClient(void) {
 
 - (void)cancelDownloads {
   [[IPDownloadCenter shared] cancelAll];
+}
+
+- (void)cancelDownloadForAppID:(long long)appID
+           externalVersionID:(NSString *)externalVersionID {
+  [[IPDownloadCenter shared] cancelDownloadForAppID:appID
+                                externalVersionID:externalVersionID];
 }
 
 @end

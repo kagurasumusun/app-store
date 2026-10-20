@@ -253,6 +253,13 @@ FOUNDATION_EXPORT NSErrorDomain const IPStoreErrorDomain;
 
 - (void)cancelDownloads NS_SWIFT_NAME(cancelDownloads());
 
+/// Cancels one app's download. Works before the transfer starts too (the
+/// store offer may still be in flight): the cancellation is remembered and
+/// applied when the transfer would begin, then forgotten.
+- (void)cancelDownloadForAppID:(long long)appID
+           externalVersionID:(nullable NSString *)externalVersionID
+    NS_SWIFT_NAME(cancelDownload(appID:externalVersionID:));
+
 @end
 
 /// Finished IPAs live here and are exposed through the Files app.

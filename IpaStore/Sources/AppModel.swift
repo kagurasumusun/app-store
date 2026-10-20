@@ -2,6 +2,7 @@
 
 import Foundation
 import Observation
+import UIKit
 
 struct AlertMessage: Identifiable {
     let id = UUID()
@@ -527,6 +528,22 @@ final class AppModel {
     private func runDownload(_ item: DownloadItem,
                              account: StoreAccount,
                              allowTokenRefresh: Bool) async {
+        // A foreground URLSession transfer dies when the process is
+        // suspended; hold a background assertion so locking the screen or
+        // switching apps briefly does not kill a multi-minute download the
+        // moment it starts. The system decides how much time that buys.
+        var backgroundTask = UIBackgroundTaskIdentifier.invalid
+        backgroundTask = UIApplication.shared.beginBackgroundTask(
+            withName: "IPAShelf download") {
+            guard backgroundTask != .invalid else { return }
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
+        }
+        defer {
+            if backgroundTask != .invalid {
+                UIApplication.shared.endBackgroundTask(backgroundTask)
+            }
+        }
         do {
             let url = try await service.download(
                 app: item.app,
@@ -565,11 +582,25 @@ final class AppModel {
         download(item.app, versionID: item.versionID)
     }
 
-    func cancelDownloads() {
-        service.cancelDownloads()
-        for item in downloads where item.state == .downloading {
+    /// Cancels a single transfer. Also reaches downloads whose store offer
+    /// is still being negotiated: the bridge remembers the request and
+    /// stops the transfer before it starts.
+    func cancelDownload(_ item: DownloadItem) {
+        service.cancelDownload(appID: item.app.appID,
+                               externalVersionID: item.versionID)
+        if item.state == .downloading || item.state == .processing {
             item.state = .cancelled
         }
+    }
+
+    func cancelDownloads() {
+        for item in downloads
+        where item.state == .downloading || item.state == .processing {
+            service.cancelDownload(appID: item.app.appID,
+                                   externalVersionID: item.versionID)
+            item.state = .cancelled
+        }
+        service.cancelDownloads()
     }
 
     func clearFinishedDownloads() {

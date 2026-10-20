@@ -179,13 +179,14 @@ private struct DownloadRow: View {
             switch item.state {
             case .downloading, .processing:
                 Button {
-                    model.cancelDownloads()
+                    model.cancelDownload(item)
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.title3)
                         .foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Cancel this download")
             case .failed, .cancelled:
                 Button {
                     model.retry(item)

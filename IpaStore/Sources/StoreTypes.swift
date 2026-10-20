@@ -452,9 +452,23 @@ struct StoreError: LocalizedError {
     }
 
     init(_ error: Error) {
+        if error is CancellationError {
+            code = .cancelled
+            message = "Cancelled."
+            return
+        }
         let nsError = error as NSError
-        code = StoreErrorCode(rawValue: nsError.code) ?? .internalError
         message = nsError.localizedDescription
+        // Codes only mean something inside their own domain. Reading the
+        // raw code without checking the domain (as this used to) turns any
+        // foreign error whose code happens to be 1 into "cancelled".
+        if nsError.domain == IPStoreErrorDomain.rawValue {
+            code = StoreErrorCode(rawValue: nsError.code) ?? .internalError
+        } else if nsError.domain == NSURLErrorDomain {
+            code = nsError.code == NSURLErrorCancelled ? .cancelled : .network
+        } else {
+            code = .internalError
+        }
     }
 
     init(code: StoreErrorCode, message: String) {
