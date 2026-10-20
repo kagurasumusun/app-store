@@ -99,7 +99,7 @@ IPv6 のポートをテストで固定しています。
 
 | テスト | 検証内容 |
 | --- | --- |
-| `test_x509` | CA の `basicConstraints`、リーフの SAN/EKU、シリアル、有効期間、DER と PEM の一致 |
+| `test_x509` | CA/リーフの `basicConstraints`/`keyUsage` の厳密な DER 形、パラメータ無しの `ecdsa-with-SHA256`（RFC 5758）、SKID/AKID、リーフの SAN/EKU、P1363→DER 署名変換の KAT |
 
 `build_core.sh` はさらに外部ツールで生成物を検証します。
 
