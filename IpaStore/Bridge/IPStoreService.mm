@@ -860,31 +860,6 @@ static ipashelf::StoreClient MakeStoreClient(void) {
   });
 }
 
-- (void)latestExternalVersionForApp:(IPStoreApp *)app
-                             region:(NSString *)region
-                           platform:(IPStorePlatform)platform
-                         completion:(void (^)(NSString *_Nullable,
-                                              NSError *_Nullable))completion {
-  dispatch_async(_queue, ^{
-    ipashelf::StoreClient client = MakeStoreClient();
-    ipashelf::App coreApp;
-    coreApp.id = app.appID;
-    coreApp.bundle_id = app.bundleID.UTF8String ?: "";
-    ipashelf::CancellationSource source;
-    auto result = client.latest_external_version_id(
-        coreApp,
-        TrimmedRegion(region, self->_accountStore.activeAccount).UTF8String ?: "us",
-        IPCorePlatform(platform), source.token());
-    dispatch_async(dispatch_get_main_queue(), ^{
-      if (!result) {
-        completion(nil, MakeError(result.error()));
-        return;
-      }
-      completion([NSString stringWithUTF8String:result.value().c_str()], nil);
-    });
-  });
-}
-
 - (void)listVersionsForApp:(IPStoreApp *)app
                    account:(IPStoreAccount *)account
                   platform:(IPStorePlatform)platform

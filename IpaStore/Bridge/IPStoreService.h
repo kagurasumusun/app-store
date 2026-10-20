@@ -203,13 +203,6 @@ FOUNDATION_EXPORT NSErrorDomain const IPStoreErrorDomain;
                               NSError *_Nullable error))completion
     NS_SWIFT_NAME(lookup(appID:bundleID:region:platform:completion:));
 
-- (void)latestExternalVersionForApp:(IPStoreApp *)app
-                             region:(NSString *)region
-                           platform:(IPStorePlatform)platform
-                         completion:(void (^)(NSString *_Nullable versionID,
-                                              NSError *_Nullable error))completion
-    NS_SWIFT_NAME(latestExternalVersion(app:region:platform:completion:));
-
 - (void)listVersionsForApp:(IPStoreApp *)app
                    account:(IPStoreAccount *)account
                   platform:(IPStorePlatform)platform

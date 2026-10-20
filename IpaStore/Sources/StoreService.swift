@@ -183,29 +183,6 @@ final class StoreService: @unchecked Sendable {
         }
     }
 
-    func latestExternalVersion(app: StoreApp,
-                               region: String,
-                               platform: StorePlatform) async throws -> String {
-        guard let handle = app.handle else {
-            throw StoreError(code: .invalidResponse, message: "Missing app handle.")
-        }
-        return try await withCheckedThrowingContinuation { continuation in
-            bridge.latestExternalVersion(app: handle,
-                                         region: region,
-                                         platform: platform.bridge) { version, error in
-                if let error {
-                    continuation.resume(throwing: StoreError(error))
-                } else if let version {
-                    continuation.resume(returning: version)
-                } else {
-                    continuation.resume(throwing: StoreError(
-                        code: .invalidResponse,
-                        message: "The catalog did not return a version identifier."))
-                }
-            }
-        }
-    }
-
     func listVersions(app: StoreApp,
                       account: StoreAccount,
                       platform: StorePlatform) async throws -> [StoreVersion] {

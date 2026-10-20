@@ -4,7 +4,7 @@ IPAShelf のテストは 3 層 + 成果物検証に分かれています。
 
 | 層 | コマンド | 内容 |
 | --- | --- | --- |
-| コア | `bash Scripts/build_core.sh` | C++ の 362 チェック + 外部ツールによる検証 |
+| コア | `bash Scripts/build_core.sh` | C++ の 627 チェック + 外部ツールによる検証 |
 | 静的 | `bash Scripts/check_static.sh` | Swift 構文、Objective-C ブリッジ API、pbxproj、括弧 |
 | ビルド | `bash Scripts/build_app.sh --device --configuration Release` | iOS 27 SDK での実機 arm64 ビルド |
 | 成果物 | `bash Scripts/package_ipa.sh` | 実機用 .ipa の生成（`verify_ipa.py` で再検証） |
@@ -35,7 +35,7 @@ SANITIZE=1 bash Scripts/build_core.sh
 
 ---
 
-## 1. コアのテスト（362 チェック）
+## 1. コアのテスト（627 チェック）
 
 ### エンコードとデータ形式
 
@@ -59,6 +59,8 @@ SANITIZE=1 bash Scripts/build_core.sh
 | `test_login_bad_password` | `BadLogin` のマッピング、リトライ回数 |
 | `test_search_and_lookup` | 検索 URL のパラメータ順、`lookup` の Bundle ID 解決 |
 | `test_latest_external_version` | カタログ API の `externalVersionId`、Vision の `appExtVrsId` |
+| `test_catalog_throttling` | カタログ 429/503 の `Retry-After` 順守リトライ、プロセス全体の結果キャッシュ（10 分）、`kTemporarilyUnavailable` 分類 |
+| `test_download_unpinned_when_catalog_throttled` | カタログが制限中でもピンを断念してダウンロード／再ダウンロードを続行するフォールバック |
 | `test_download_offer` | `volumeStoreDownloadProduct` の解析 |
 | `test_download_fallback` | `/r/redownload` と `/up/updateProduct` のフォールバック |
 | `test_purchase` | 無料アプリの購入、`pricingParameters` |
