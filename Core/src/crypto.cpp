@@ -2,8 +2,16 @@
 
 #include "ipashelf/crypto.hpp"
 
+#include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <random>
 #include <utility>
+#include <vector>
+
+#if defined(__APPLE__)
+#include <stdlib.h>
+#endif
 
 namespace ipashelf {
 namespace {
@@ -365,6 +373,566 @@ std::string sha256_hex(const void* data, std::size_t size) {
   const auto digest = sha256(data, size);
   Bytes bytes(digest.begin(), digest.end());
   return hex_encode(bytes);
+}
+
+Sha1::Sha1()
+    : state_{0x67452301u, 0xefcdab89u, 0x98badcfeu, 0x10325476u, 0xc3d2e1f0u} {}
+
+void Sha1::transform(const std::uint8_t block[64]) {
+  std::array<std::uint32_t, 80> words{};
+  for (std::size_t index = 0; index < 16; ++index) {
+    words[index] = (static_cast<std::uint32_t>(block[index * 4]) << 24) |
+                   (static_cast<std::uint32_t>(block[index * 4 + 1]) << 16) |
+                   (static_cast<std::uint32_t>(block[index * 4 + 2]) << 8) |
+                   static_cast<std::uint32_t>(block[index * 4 + 3]);
+  }
+  for (std::size_t index = 16; index < 80; ++index) {
+    words[index] = rotate_left(words[index - 3] ^ words[index - 8] ^
+                                   words[index - 14] ^ words[index - 16],
+                               1);
+  }
+  std::uint32_t a = state_[0], b = state_[1], c = state_[2], d = state_[3],
+                e = state_[4];
+  for (std::size_t index = 0; index < 80; ++index) {
+    std::uint32_t f = 0;
+    std::uint32_t k = 0;
+    if (index < 20) {
+      f = (b & c) | (~b & d);
+      k = 0x5a827999u;
+    } else if (index < 40) {
+      f = b ^ c ^ d;
+      k = 0x6ed9eba1u;
+    } else if (index < 60) {
+      f = (b & c) | (b & d) | (c & d);
+      k = 0x8f1bbcdcu;
+    } else {
+      f = b ^ c ^ d;
+      k = 0xca62c1d6u;
+    }
+    const std::uint32_t next =
+        rotate_left(a, 5) + f + e + k + words[index];
+    e = d;
+    d = c;
+    c = rotate_left(b, 30);
+    b = a;
+    a = next;
+  }
+  state_[0] += a;
+  state_[1] += b;
+  state_[2] += c;
+  state_[3] += d;
+  state_[4] += e;
+}
+
+void Sha1::update(const void* data, std::size_t size) {
+  if (finished_ || data == nullptr || size == 0) return;
+  const auto* bytes = static_cast<const std::uint8_t*>(data);
+  total_bytes_ += size;
+  while (size > 0) {
+    const std::size_t take = std::min(size, buffer_.size() - buffer_size_);
+    std::memcpy(buffer_.data() + buffer_size_, bytes, take);
+    buffer_size_ += take;
+    bytes += take;
+    size -= take;
+    if (buffer_size_ == buffer_.size()) {
+      transform(buffer_.data());
+      buffer_size_ = 0;
+    }
+  }
+}
+
+std::array<std::uint8_t, 20> Sha1::finish() {
+  if (!finished_) {
+    finished_ = true;
+    const std::uint64_t bit_length = total_bytes_ * 8;
+    buffer_[buffer_size_++] = 0x80;
+    if (buffer_size_ > 56) {
+      while (buffer_size_ < buffer_.size()) buffer_[buffer_size_++] = 0;
+      transform(buffer_.data());
+      buffer_size_ = 0;
+    }
+    while (buffer_size_ < 56) buffer_[buffer_size_++] = 0;
+    for (int index = 7; index >= 0; --index) {
+      buffer_[buffer_size_++] =
+          static_cast<std::uint8_t>((bit_length >> (index * 8)) & 0xff);
+    }
+    transform(buffer_.data());
+    buffer_size_ = 0;
+  }
+  std::array<std::uint8_t, 20> digest{};
+  for (std::size_t index = 0; index < state_.size(); ++index) {
+    digest[index * 4] = static_cast<std::uint8_t>((state_[index] >> 24) & 0xff);
+    digest[index * 4 + 1] =
+        static_cast<std::uint8_t>((state_[index] >> 16) & 0xff);
+    digest[index * 4 + 2] =
+        static_cast<std::uint8_t>((state_[index] >> 8) & 0xff);
+    digest[index * 4 + 3] = static_cast<std::uint8_t>(state_[index] & 0xff);
+  }
+  return digest;
+}
+
+std::array<std::uint8_t, 20> sha1(const void* data, std::size_t size) {
+  Sha1 hasher;
+  hasher.update(data, size);
+  return hasher.finish();
+}
+
+std::string sha1_hex(const void* data, std::size_t size) {
+  const auto digest = sha1(data, size);
+  Bytes bytes(digest.begin(), digest.end());
+  return hex_encode(bytes);
+}
+
+std::array<std::uint8_t, 20> hmac_sha1(const Bytes& key, const void* data,
+                                        std::size_t size) {
+  std::array<std::uint8_t, 64> key_block{};
+  if (key.size() > key_block.size()) {
+    const auto hashed = sha1(key.data(), key.size());
+    std::copy(hashed.begin(), hashed.end(), key_block.begin());
+  } else {
+    std::copy(key.begin(), key.end(), key_block.begin());
+  }
+  std::array<std::uint8_t, 64> inner_pad{};
+  std::array<std::uint8_t, 64> outer_pad{};
+  for (std::size_t index = 0; index < key_block.size(); ++index) {
+    inner_pad[index] = static_cast<std::uint8_t>(key_block[index] ^ 0x36);
+    outer_pad[index] = static_cast<std::uint8_t>(key_block[index] ^ 0x5c);
+  }
+  Sha1 inner;
+  inner.update(inner_pad.data(), inner_pad.size());
+  inner.update(data, size);
+  const auto inner_digest = inner.finish();
+  Sha1 outer;
+  outer.update(outer_pad.data(), outer_pad.size());
+  outer.update(inner_digest.data(), inner_digest.size());
+  return outer.finish();
+}
+
+Result<Bytes> random_bytes(std::size_t size) {
+  Bytes output(size);
+  if (size == 0) return output;
+#if defined(__APPLE__)
+  arc4random_buf(output.data(), output.size());
+  return output;
+#else
+  if (FILE* file = std::fopen("/dev/urandom", "rb")) {
+    const std::size_t read = std::fread(output.data(), 1, output.size(), file);
+    std::fclose(file);
+    if (read == output.size()) return output;
+  }
+  try {
+    std::random_device device;
+    for (std::size_t index = 0; index < output.size(); index += 4) {
+      const std::uint32_t word = device();
+      const std::size_t take = std::min<std::size_t>(4, output.size() - index);
+      std::memcpy(output.data() + index, &word, take);
+    }
+    return output;
+  } catch (...) {
+    return make_error(ErrorCode::kInternal,
+                      "no operating system random source is available");
+  }
+#endif
+}
+
+namespace {
+
+std::uint8_t gf_multiply(std::uint8_t a, std::uint8_t b) {
+  std::uint8_t result = 0;
+  while (b != 0) {
+    if ((b & 1) != 0) result = static_cast<std::uint8_t>(result ^ a);
+    const bool carry = (a & 0x80) != 0;
+    a = static_cast<std::uint8_t>(a << 1);
+    if (carry) a = static_cast<std::uint8_t>(a ^ 0x1b);
+    b = static_cast<std::uint8_t>(b >> 1);
+  }
+  return result;
+}
+
+std::uint8_t gf_inverse(std::uint8_t value) {
+  if (value == 0) return 0;
+  std::uint8_t result = 1;
+  std::uint8_t base = value;
+  unsigned exponent = 254;
+  while (exponent != 0) {
+    if ((exponent & 1) != 0) result = gf_multiply(result, base);
+    base = gf_multiply(base, base);
+    exponent >>= 1;
+  }
+  return result;
+}
+
+std::uint8_t aes_sbox(std::uint8_t value) {
+  const std::uint8_t inverse = gf_inverse(value);
+  std::uint8_t result = inverse;
+  std::uint8_t rotated = inverse;
+  for (int index = 0; index < 4; ++index) {
+    rotated = static_cast<std::uint8_t>((rotated << 1) | (rotated >> 7));
+    result = static_cast<std::uint8_t>(result ^ rotated);
+  }
+  return static_cast<std::uint8_t>(result ^ 0x63);
+}
+
+std::uint8_t aes_inverse_sbox(std::uint8_t value) {
+  static const std::array<std::uint8_t, 256> kInverse = [] {
+    std::array<std::uint8_t, 256> table{};
+    for (int index = 0; index < 256; ++index) {
+      table[aes_sbox(static_cast<std::uint8_t>(index))] =
+          static_cast<std::uint8_t>(index);
+    }
+    return table;
+  }();
+  return kInverse[value];
+}
+
+void aes_add_round_key(std::uint8_t state[16], const std::uint8_t* round_key) {
+  for (int index = 0; index < 16; ++index) {
+    state[index] = static_cast<std::uint8_t>(state[index] ^ round_key[index]);
+  }
+}
+
+void aes_shift_rows(std::uint8_t state[16], bool inverse) {
+  std::uint8_t copy[16];
+  std::memcpy(copy, state, 16);
+  for (int row = 0; row < 4; ++row) {
+    for (int column = 0; column < 4; ++column) {
+      const int shift = inverse ? (4 - row) % 4 : row;
+      state[column * 4 + row] = copy[((column + shift) % 4) * 4 + row];
+    }
+  }
+}
+
+void aes_mix_columns(std::uint8_t state[16], bool inverse) {
+  for (int column = 0; column < 4; ++column) {
+    std::uint8_t* cell = state + column * 4;
+    const std::uint8_t a0 = cell[0], a1 = cell[1], a2 = cell[2], a3 = cell[3];
+    if (!inverse) {
+      cell[0] = gf_multiply(a0, 2) ^ gf_multiply(a1, 3) ^ a2 ^ a3;
+      cell[1] = a0 ^ gf_multiply(a1, 2) ^ gf_multiply(a2, 3) ^ a3;
+      cell[2] = a0 ^ a1 ^ gf_multiply(a2, 2) ^ gf_multiply(a3, 3);
+      cell[3] = gf_multiply(a0, 3) ^ a1 ^ a2 ^ gf_multiply(a3, 2);
+    } else {
+      cell[0] = gf_multiply(a0, 14) ^ gf_multiply(a1, 11) ^
+                gf_multiply(a2, 13) ^ gf_multiply(a3, 9);
+      cell[1] = gf_multiply(a0, 9) ^ gf_multiply(a1, 14) ^
+                gf_multiply(a2, 11) ^ gf_multiply(a3, 13);
+      cell[2] = gf_multiply(a0, 13) ^ gf_multiply(a1, 9) ^
+                gf_multiply(a2, 14) ^ gf_multiply(a3, 11);
+      cell[3] = gf_multiply(a0, 11) ^ gf_multiply(a1, 13) ^
+                gf_multiply(a2, 9) ^ gf_multiply(a3, 14);
+    }
+  }
+}
+
+// Minimal big-unsigned arithmetic for the one public-key operation the SAP
+// setup handshake needs. Limbs are little-endian base 2^32.
+using BigUint = std::vector<std::uint32_t>;
+
+void big_trim(BigUint& value) {
+  while (value.size() > 1 && value.back() == 0) value.pop_back();
+}
+
+int big_compare(const BigUint& left, const BigUint& right) {
+  std::size_t left_size = left.size();
+  std::size_t right_size = right.size();
+  while (left_size > 1 && left[left_size - 1] == 0) --left_size;
+  while (right_size > 1 && right[right_size - 1] == 0) --right_size;
+  if (left_size != right_size) return left_size < right_size ? -1 : 1;
+  for (std::size_t index = left_size; index-- > 0;) {
+    if (left[index] != right[index]) return left[index] < right[index] ? -1 : 1;
+  }
+  return 0;
+}
+
+// Requires left >= right.
+void big_subtract_in_place(BigUint& left, const BigUint& right) {
+  std::uint64_t borrow = 0;
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    const std::uint64_t subtrahend =
+        (index < right.size() ? right[index] : 0) + borrow;
+    const std::uint64_t current = left[index];
+    left[index] =
+        static_cast<std::uint32_t>((current - subtrahend) & 0xffffffffu);
+    borrow = current < subtrahend ? 1 : 0;
+  }
+  big_trim(left);
+}
+
+BigUint big_multiply(const BigUint& left, const BigUint& right) {
+  BigUint result(left.size() + right.size(), 0);
+  for (std::size_t i = 0; i < left.size(); ++i) {
+    std::uint64_t carry = 0;
+    for (std::size_t j = 0; j < right.size(); ++j) {
+      const std::uint64_t total =
+          static_cast<std::uint64_t>(left[i]) * right[j] + result[i + j] +
+          carry;
+      result[i + j] = static_cast<std::uint32_t>(total & 0xffffffffu);
+      carry = total >> 32;
+    }
+    result[i + right.size()] += static_cast<std::uint32_t>(carry);
+  }
+  big_trim(result);
+  return result;
+}
+
+std::size_t big_bit_length(const BigUint& value) {
+  std::size_t size = value.size();
+  while (size > 1 && value[size - 1] == 0) --size;
+  std::uint32_t top = value[size - 1];
+  std::size_t bits = (size - 1) * 32;
+  while (top != 0) {
+    ++bits;
+    top >>= 1;
+  }
+  return bits;
+}
+
+bool big_bit(const BigUint& value, std::size_t bit) {
+  const std::size_t limb = bit / 32;
+  if (limb >= value.size()) return false;
+  return ((value[limb] >> (bit % 32)) & 1u) != 0;
+}
+
+void big_shift_left_one(BigUint& value) {
+  std::uint32_t carry = 0;
+  for (std::uint32_t& limb : value) {
+    const std::uint32_t next_carry = limb >> 31;
+    limb = (limb << 1) | carry;
+    carry = next_carry;
+  }
+  if (carry != 0) value.push_back(carry);
+}
+
+BigUint big_mod(BigUint value, const BigUint& modulus) {
+  if (big_compare(value, modulus) < 0) return value;
+  BigUint remainder(1, 0);
+  const std::size_t bits = big_bit_length(value);
+  for (std::size_t index = bits; index-- > 0;) {
+    big_shift_left_one(remainder);
+    if (big_bit(value, index)) remainder[0] |= 1u;
+    if (big_compare(remainder, modulus) >= 0) {
+      big_subtract_in_place(remainder, modulus);
+    }
+  }
+  return remainder;
+}
+
+BigUint big_mod_multiply(const BigUint& left, const BigUint& right,
+                         const BigUint& modulus) {
+  return big_mod(big_multiply(left, right), modulus);
+}
+
+BigUint big_mod_power(BigUint base, const BigUint& exponent,
+                      const BigUint& modulus) {
+  BigUint result(1, 1);
+  base = big_mod(base, modulus);
+  const std::size_t bits = big_bit_length(exponent);
+  for (std::size_t index = bits; index-- > 0;) {
+    result = big_mod_multiply(result, result, modulus);
+    if (big_bit(exponent, index)) {
+      result = big_mod_multiply(result, base, modulus);
+    }
+  }
+  return result;
+}
+
+BigUint big_from_big_endian(const Bytes& bytes) {
+  BigUint value((bytes.size() + 3) / 4, 0);
+  for (std::size_t index = 0; index < bytes.size(); ++index) {
+    const std::size_t from_end = bytes.size() - 1 - index;
+    value[from_end / 4] |=
+        static_cast<std::uint32_t>(bytes[index]) << ((from_end % 4) * 8);
+  }
+  if (value.empty()) value.push_back(0);
+  big_trim(value);
+  return value;
+}
+
+Bytes big_to_big_endian(const BigUint& value, std::size_t size) {
+  Bytes output(size, 0);
+  for (std::size_t index = 0; index < size; ++index) {
+    const std::size_t from_end = size - 1 - index;
+    const std::size_t limb = from_end / 4;
+    if (limb < value.size()) {
+      output[index] = static_cast<std::uint8_t>(
+          (value[limb] >> ((from_end % 4) * 8)) & 0xff);
+    }
+  }
+  return output;
+}
+
+Bytes mgf1_sha1(const Bytes& seed, std::size_t size) {
+  Bytes output;
+  output.reserve(size);
+  for (std::uint32_t counter = 0; output.size() < size; ++counter) {
+    Bytes block = seed;
+    block.push_back(static_cast<std::uint8_t>((counter >> 24) & 0xff));
+    block.push_back(static_cast<std::uint8_t>((counter >> 16) & 0xff));
+    block.push_back(static_cast<std::uint8_t>((counter >> 8) & 0xff));
+    block.push_back(static_cast<std::uint8_t>(counter & 0xff));
+    const auto digest = sha1(block.data(), block.size());
+    output.insert(output.end(), digest.begin(), digest.end());
+  }
+  output.resize(size);
+  return output;
+}
+
+}  // namespace
+
+Aes128::Aes128(const std::array<std::uint8_t, 16>& key) {
+  static constexpr std::uint8_t kRoundConstants[10] = {
+      0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36};
+  std::copy(key.begin(), key.end(), round_keys_.begin());
+  std::size_t generated = 16;
+  std::size_t round = 0;
+  while (generated < round_keys_.size()) {
+    std::uint8_t temp[4];
+    std::memcpy(temp, round_keys_.data() + generated - 4, 4);
+    if (generated % 16 == 0) {
+      const std::uint8_t first = temp[0];
+      temp[0] = static_cast<std::uint8_t>(aes_sbox(temp[1]) ^
+                                           kRoundConstants[round++]);
+      temp[1] = aes_sbox(temp[2]);
+      temp[2] = aes_sbox(temp[3]);
+      temp[3] = aes_sbox(first);
+    }
+    for (std::uint8_t byte : temp) {
+      round_keys_[generated] = static_cast<std::uint8_t>(
+          round_keys_[generated - 16] ^ byte);
+      ++generated;
+    }
+  }
+}
+
+void Aes128::encrypt_block(const std::uint8_t input[16],
+                           std::uint8_t output[16]) const {
+  std::uint8_t state[16];
+  std::memcpy(state, input, 16);
+  aes_add_round_key(state, round_keys_.data());
+  for (int round = 1; round < 10; ++round) {
+    for (std::uint8_t& byte : state) byte = aes_sbox(byte);
+    aes_shift_rows(state, false);
+    aes_mix_columns(state, false);
+    aes_add_round_key(state, round_keys_.data() + round * 16);
+  }
+  for (std::uint8_t& byte : state) byte = aes_sbox(byte);
+  aes_shift_rows(state, false);
+  aes_add_round_key(state, round_keys_.data() + 160);
+  std::memcpy(output, state, 16);
+}
+
+void Aes128::decrypt_block(const std::uint8_t input[16],
+                           std::uint8_t output[16]) const {
+  std::uint8_t state[16];
+  std::memcpy(state, input, 16);
+  aes_add_round_key(state, round_keys_.data() + 160);
+  for (int round = 9; round >= 1; --round) {
+    aes_shift_rows(state, true);
+    for (std::uint8_t& byte : state) byte = aes_inverse_sbox(byte);
+    aes_add_round_key(state, round_keys_.data() + round * 16);
+    aes_mix_columns(state, true);
+  }
+  aes_shift_rows(state, true);
+  for (std::uint8_t& byte : state) byte = aes_inverse_sbox(byte);
+  aes_add_round_key(state, round_keys_.data());
+  std::memcpy(output, state, 16);
+}
+
+Result<Bytes> aes128_cbc_encrypt(const Bytes& data,
+                                 const std::array<std::uint8_t, 16>& key,
+                                 const std::array<std::uint8_t, 16>& iv) {
+  if (data.size() % 16 != 0) {
+    return make_error(ErrorCode::kInvalidArgument,
+                      "AES-CBC input must be a multiple of sixteen bytes");
+  }
+  const Aes128 cipher(key);
+  Bytes output(data.size());
+  std::array<std::uint8_t, 16> previous = iv;
+  for (std::size_t offset = 0; offset < data.size(); offset += 16) {
+    std::uint8_t block[16];
+    for (int index = 0; index < 16; ++index) {
+      block[index] =
+          static_cast<std::uint8_t>(data[offset + index] ^ previous[index]);
+    }
+    cipher.encrypt_block(block, output.data() + offset);
+    std::memcpy(previous.data(), output.data() + offset, 16);
+  }
+  return output;
+}
+
+Result<Bytes> aes128_cbc_decrypt(const Bytes& data,
+                                 const std::array<std::uint8_t, 16>& key,
+                                 const std::array<std::uint8_t, 16>& iv) {
+  if (data.size() % 16 != 0) {
+    return make_error(ErrorCode::kInvalidArgument,
+                      "AES-CBC input must be a multiple of sixteen bytes");
+  }
+  const Aes128 cipher(key);
+  Bytes output(data.size());
+  std::array<std::uint8_t, 16> previous = iv;
+  for (std::size_t offset = 0; offset < data.size(); offset += 16) {
+    std::array<std::uint8_t, 16> current{};
+    std::memcpy(current.data(), data.data() + offset, 16);
+    std::uint8_t block[16];
+    cipher.decrypt_block(current.data(), block);
+    for (int index = 0; index < 16; ++index) {
+      output[offset + index] =
+          static_cast<std::uint8_t>(block[index] ^ previous[index]);
+    }
+    previous = current;
+  }
+  return output;
+}
+
+Result<Bytes> rsa_oaep_sha1_encrypt(const Bytes& message,
+                                    const std::array<std::uint8_t, 20>& seed,
+                                    const Bytes& modulus,
+                                    const Bytes& exponent) {
+  const std::size_t modulus_size = modulus.size();
+  if (modulus_size <= 42 || message.size() > modulus_size - 42) {
+    return make_error(ErrorCode::kInvalidArgument,
+                      "message is too long for RSA-OAEP with SHA-1");
+  }
+  const BigUint modulus_value = big_from_big_endian(modulus);
+  const BigUint exponent_value = big_from_big_endian(exponent);
+  if (big_bit_length(modulus_value) < (modulus_size - 1) * 8 + 1 ||
+      big_bit_length(exponent_value) < 2 ||
+      (exponent_value[0] & 1u) == 0) {
+    return make_error(ErrorCode::kInvalidArgument,
+                      "invalid RSA public key for OAEP");
+  }
+  Bytes data_block;
+  const auto label_hash = sha1(nullptr, 0);
+  data_block.insert(data_block.end(), label_hash.begin(), label_hash.end());
+  data_block.insert(data_block.end(),
+                    modulus_size - message.size() - 42, 0);
+  data_block.push_back(1);
+  data_block.insert(data_block.end(), message.begin(), message.end());
+  const Bytes seed_bytes(seed.begin(), seed.end());
+  const Bytes database_mask = mgf1_sha1(seed_bytes, modulus_size - 21);
+  Bytes masked_database(data_block.size());
+  for (std::size_t index = 0; index < data_block.size(); ++index) {
+    masked_database[index] =
+        static_cast<std::uint8_t>(data_block[index] ^ database_mask[index]);
+  }
+  const Bytes seed_mask = mgf1_sha1(masked_database, seed.size());
+  Bytes encoded;
+  encoded.reserve(modulus_size);
+  encoded.push_back(0);
+  for (std::size_t index = 0; index < seed.size(); ++index) {
+    encoded.push_back(
+        static_cast<std::uint8_t>(seed[index] ^ seed_mask[index]));
+  }
+  encoded.insert(encoded.end(), masked_database.begin(),
+                 masked_database.end());
+  const BigUint encoded_value = big_from_big_endian(encoded);
+  if (big_compare(encoded_value, modulus_value) >= 0) {
+    return make_error(ErrorCode::kInvalidArgument,
+                      "RSA-OAEP representative is out of range");
+  }
+  const BigUint result =
+      big_mod_power(encoded_value, exponent_value, modulus_value);
+  return big_to_big_endian(result, modulus_size);
 }
 
 }  // namespace ipashelf

@@ -174,14 +174,8 @@ Result<std::unique_ptr<SapSession>> establish_sap_session(
       new SapSession(backend, context.value(), hardware_block.value()));
 }
 
-// Weak default so the portable core links on its own. The iOS platform layer
-// provides a strong definition that resolves Apple's SAP entry points.
-#if defined(__GNUC__) || defined(__clang__)
-__attribute__((weak))
-#endif
-Result<std::shared_ptr<SapBackend>> create_platform_sap_backend() {
-  return make_error(ErrorCode::kSignerUnavailable,
-                    "No SAP backend is linked for this platform");
-}
+// `create_platform_sap_backend` is defined by the pure-software SAP
+// implementation in sap_software.cpp, which is part of the portable core
+// and runs identically on every platform (including sandboxed iOS apps).
 
 }  // namespace ipashelf

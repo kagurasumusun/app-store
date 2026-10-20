@@ -15,8 +15,9 @@
 namespace ipashelf {
 
 /// Low-level access to Apple's SAP primitives. The production implementation
-/// resolves these entry points from the system CoreFP/AppleMediaServices
-/// frameworks; tests inject a deterministic fake.
+/// is the pure-software protocol implementation in `sap_software.hpp`, which
+/// runs on every platform without private frameworks; tests may inject a
+/// deterministic fake instead.
 class SapBackend {
  public:
   virtual ~SapBackend() = default;
