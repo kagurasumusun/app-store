@@ -30,6 +30,8 @@ ipashelf::Platform IPCorePlatform(IPStorePlatform platform) {
       return ipashelf::Platform::kWatchOS;
     case IPStorePlatformVision:
       return ipashelf::Platform::kVisionOS;
+    case IPStorePlatformAny:
+      return ipashelf::Platform::kUnspecified;
     case IPStorePlatformIPhone:
     default:
       return ipashelf::Platform::kIPhone;
@@ -126,6 +128,8 @@ NSString *SafeFilename(NSString *value) {
 @property (nonatomic, copy) void (^progress)(double, long long, long long);
 @property (nonatomic, copy) void (^completion)(NSString *_Nullable, NSError *_Nullable);
 @property (nonatomic, copy, nullable) NSString *downloadedPath;
+@property (nonatomic, strong, nullable) NSError *failureError;
+@property (nonatomic, copy) NSString *resumeKey;
 @property (nonatomic, strong) NSURLSessionDownloadTask *task;
 @end
 
@@ -134,8 +138,13 @@ NSString *SafeFilename(NSString *value) {
 
 @interface IPDownloadCenter : NSObject <NSURLSessionDownloadDelegate>
 @property (class, nonatomic, readonly) IPDownloadCenter *shared;
+/// Downloads `url`, resuming from any partial data previously saved under
+/// `resumeKey` (for example "<appID>-<externalVersionID>"). Partial data
+/// survives cancellation and app relaunches; it is discarded once the
+/// download completes or the server rejects the resumed request.
 - (void)downloadURL:(NSURL *)url
              headers:(NSDictionary<NSString *, NSString *> *)headers
+           resumeKey:(NSString *)resumeKey
             progress:(void (^)(double, long long, long long))progress
           completion:(void (^)(NSString *_Nullable, NSError *_Nullable))completion;
 - (void)cancelAll;
@@ -151,6 +160,41 @@ NSString *SafeFilename(NSString *value) {
   NSOperationQueue *_delegateQueue;
   NSMutableDictionary<NSNumber *, IPDownloadContext *> *_contexts;
   NSLock *_lock;
+}
+
++ (NSString *)resumeDataDirectory {
+  NSString *caches = [NSSearchPathForDirectoriesInDomains(
+      NSCachesDirectory, NSUserDomainMask, YES) firstObject];
+  NSString *directory =
+      [caches stringByAppendingPathComponent:@"IPDownloadResume"];
+  [[NSFileManager defaultManager] createDirectoryAtPath:directory
+                            withIntermediateDirectories:YES
+                                             attributes:nil
+                                                  error:nil];
+  return directory;
+}
+
++ (NSString *)resumeDataPathForKey:(NSString *)key {
+  return [[self resumeDataDirectory]
+      stringByAppendingPathComponent:
+          [SafeFilename(key) stringByAppendingPathExtension:@"resumedata"]];
+}
+
+- (nullable NSData *)resumeDataForKey:(NSString *)key {
+  if (key.length == 0) return nil;
+  return [NSData dataWithContentsOfFile:[IPDownloadCenter resumeDataPathForKey:key]];
+}
+
+- (void)storeResumeData:(NSData *)data forKey:(NSString *)key {
+  if (key.length == 0 || data.length == 0) return;
+  [data writeToFile:[IPDownloadCenter resumeDataPathForKey:key] atomically:YES];
+}
+
+- (void)discardResumeDataForKey:(NSString *)key {
+  if (key.length == 0) return;
+  [[NSFileManager defaultManager]
+      removeItemAtPath:[IPDownloadCenter resumeDataPathForKey:key]
+                 error:nil];
 }
 
 + (IPDownloadCenter *)shared {
@@ -185,17 +229,26 @@ NSString *SafeFilename(NSString *value) {
 
 - (void)downloadURL:(NSURL *)url
              headers:(NSDictionary<NSString *, NSString *> *)headers
+           resumeKey:(NSString *)resumeKey
             progress:(void (^)(double, long long, long long))progress
           completion:(void (^)(NSString *_Nullable, NSError *_Nullable))completion {
-  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
-  request.HTTPMethod = @"GET";
-  for (NSString *name in headers) {
-    [request setValue:headers[name] forHTTPHeaderField:name];
+  NSURLSessionDownloadTask *task = nil;
+  NSData *resumeData = [self resumeDataForKey:resumeKey];
+  if (resumeData.length > 0) {
+    task = [_session downloadTaskWithResumeData:resumeData];
   }
-  NSURLSessionDownloadTask *task = [_session downloadTaskWithRequest:request];
+  if (task == nil) {
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.HTTPMethod = @"GET";
+    for (NSString *name in headers) {
+      [request setValue:headers[name] forHTTPHeaderField:name];
+    }
+    task = [_session downloadTaskWithRequest:request];
+  }
   IPDownloadContext *context = [[IPDownloadContext alloc] init];
   context.progress = progress;
   context.completion = completion;
+  context.resumeKey = resumeKey ?: @"";
   context.task = task;
   [_lock lock];
   _contexts[@(task.taskIdentifier)] = context;
@@ -216,19 +269,36 @@ NSString *SafeFilename(NSString *value) {
   [_contexts removeObjectForKey:@(task.taskIdentifier)];
   [_lock unlock];
   if (context == nil) return;
-  if (context.completion == nil) return;
-  if (error != nil) {
-    if (error.code == NSURLErrorCancelled) {
-      context.completion(nil, MakeErrorCode(IPStoreErrorCancelled,
-                                            @"The download was cancelled."));
-    } else {
-      context.completion(nil, error);
+
+  NSError *effectiveError = context.failureError ?: error;
+  if (effectiveError == nil && context.downloadedPath.length > 0) {
+    [self discardResumeDataForKey:context.resumeKey];
+    if (context.completion != nil) context.completion(context.downloadedPath, nil);
+    return;
+  }
+
+  if (effectiveError == nil) {
+    effectiveError = MakeErrorCode(IPStoreErrorStorage,
+                                   @"The download finished without a file.");
+  }
+  // Interrupted transfers may carry fresh resume data; keep it so the next
+  // attempt continues where this one stopped. A completed HTTP error means
+  // the saved state (or its signed URL) is stale, so drop it instead.
+  if (context.failureError == nil) {
+    NSData *resumeData = error.userInfo[NSURLSessionDownloadTaskResumeData];
+    if ([resumeData isKindOfClass:[NSData class]]) {
+      [self storeResumeData:resumeData forKey:context.resumeKey];
     }
-  } else if (context.downloadedPath.length > 0) {
-    context.completion(context.downloadedPath, nil);
   } else {
-    context.completion(nil, MakeErrorCode(IPStoreErrorStorage,
-                                          @"The download finished without a file."));
+    [self discardResumeDataForKey:context.resumeKey];
+  }
+  if (context.completion == nil) return;
+  if (effectiveError.code == NSURLErrorCancelled &&
+      [effectiveError.domain isEqualToString:NSURLErrorDomain]) {
+    context.completion(nil, MakeErrorCode(IPStoreErrorCancelled,
+                                          @"The download was cancelled."));
+  } else {
+    context.completion(nil, effectiveError);
   }
 }
 
@@ -252,6 +322,25 @@ NSString *SafeFilename(NSString *value) {
     didFinishDownloadingToURL:(NSURL *)location {
   IPDownloadContext *context = [self contextForTask:downloadTask];
   if (context == nil) return;
+  // Download tasks happily save an HTTP error body as the "file"; only a
+  // 200 (fresh) or 206 (resumed) response is a package.
+  if ([downloadTask.response isKindOfClass:[NSHTTPURLResponse class]]) {
+    const NSInteger status =
+        ((NSHTTPURLResponse *)downloadTask.response).statusCode;
+    if (status != 200 && status != 206) {
+      context.failureError = [NSError
+          errorWithDomain:IPStoreErrorDomain
+                     code:IPStoreErrorHTTPStatus
+                 userInfo:@{
+                   NSLocalizedDescriptionKey : [NSString
+                       stringWithFormat:@"The package server returned HTTP %ld.",
+                                        (long)status],
+                   @"HTTPStatus" : @(status),
+                 }];
+      context.downloadedPath = nil;
+      return;
+    }
+  }
   NSString *name = [NSString stringWithFormat:@"ipastore-%lu.ipa",
                                              (unsigned long)downloadTask.taskIdentifier];
   NSString *destination = [NSTemporaryDirectory() stringByAppendingPathComponent:name];
@@ -272,12 +361,32 @@ NSString *SafeFilename(NSString *value) {
   [self finishTask:task error:error];
 }
 
+- (void)URLSession:(NSURLSession *)session
+                 downloadTask:(NSURLSessionDownloadTask *)downloadTask
+    didResumeAtOffset:(int64_t)fileOffset
+          expectedTotalBytes:(int64_t)expectedTotalBytes {
+  IPDownloadContext *context = [self contextForTask:downloadTask];
+  if (context.progress == nil) return;
+  const double fraction =
+      expectedTotalBytes > 0
+          ? static_cast<double>(fileOffset) /
+                static_cast<double>(expectedTotalBytes)
+          : 0.0;
+  context.progress(fraction, fileOffset, expectedTotalBytes);
+}
+
 - (void)cancelAll {
   [_lock lock];
   NSArray<IPDownloadContext *> *contexts = _contexts.allValues;
   [_lock unlock];
   for (IPDownloadContext *context in contexts) {
-    [context.task cancel];
+    // Preserve partial data so a later attempt can resume instead of
+    // starting the (potentially multi-gigabyte) package over.
+    [context.task cancelByProducingResumeData:^(NSData *_Nullable resumeData) {
+      if (resumeData.length > 0) {
+        [self storeResumeData:resumeData forKey:context.resumeKey];
+      }
+    }];
   }
 }
 
@@ -312,16 +421,65 @@ static NSDictionary<NSString *, id> *SidecarForApp(IPStoreApp *app,
                      coreApp:(ipashelf::App)coreApp
                  coreAccount:(ipashelf::Account)coreAccount
                      version:(std::string)version
+                    platform:(ipashelf::Platform)platform
                   completion:(void (^)(NSString *_Nullable, NSError *_Nullable))completion;
 @end
+
+/// Best-effort download of the artwork Apple reports with the download item
+/// (injected into the finished IPA as iTunesArtwork). A failure only costs
+/// the icon, never the package, so it is not fatal.
+static std::optional<ipashelf::Bytes> FetchArtwork(const std::string &url) {
+  if (url.empty()) return std::nullopt;
+  ipashelf::HttpRequest request;
+  request.method = "GET";
+  request.url = url;
+  request.headers.set(
+      "User-Agent", std::string(ipashelf::kDefaultUserAgent));
+  ipashelf::CancellationSource source;
+  auto response = IPSharedHTTPTransport().send(request, source.token());
+  if (!response) return std::nullopt;
+  if (response.value().status != 200 || response.value().body.empty()) {
+    return std::nullopt;
+  }
+  return std::move(response.value().body);
+}
 
 static ipashelf::StoreClient MakeStoreClient(void) {
   ipashelf::StoreConfiguration configuration;
   configuration.sleep = [](std::chrono::milliseconds duration) {
     std::this_thread::sleep_for(duration);
   };
-  configuration.sap_backend_factory = [] {
-    return IPCreateSAPBackend();
+  // No SAP backend factory: the core falls back to its complete
+  // pure-software SAP v200 signer, which runs inside the app sandbox
+  // without any private framework.
+
+  // The purchase-history (DAAP) requests carry the device timezone, like
+  // the real Configurator client does.
+  NSTimeZone *timeZone = [NSTimeZone localTimeZone];
+  configuration.time_zone_name = timeZone.name.UTF8String ?: "UTC";
+  configuration.utc_offset_seconds =
+      static_cast<int>([timeZone secondsFromGMT]);
+
+  // kbsync blobs for the ent/download endpoint are generated by FairPlay
+  // machine code upstream (there is no portable reimplementation), so no
+  // generator is installed and downloads use the legacy
+  // volumeStore/redownload/updateProduct chain. The cache hooks are wired
+  // to the Keychain so a future generator drops in without changes here.
+  configuration.kbsync_cache_load = []() -> std::optional<std::string> {
+    NSString *value = [IPKeychain stringForKey:@"kbsync-v1"];
+    if (value == nil) return std::nullopt;
+    return std::string(value.UTF8String ?: "");
+  };
+  configuration.kbsync_cache_store = [](std::string_view entry) {
+    NSString *value = [[NSString alloc] initWithBytes:entry.data()
+                                               length:entry.size()
+                                             encoding:NSUTF8StringEncoding];
+    if (value != nil) {
+      [IPKeychain setString:value forKey:@"kbsync-v1" error:nil];
+    }
+  };
+  configuration.kbsync_cache_remove = []() {
+    [IPKeychain removeKey:@"kbsync-v1" error:nil];
   };
   return ipashelf::StoreClient(IPSharedHTTPTransport(), std::move(configuration));
 }
@@ -553,7 +711,7 @@ static ipashelf::StoreClient MakeStoreClient(void) {
     coreApp.id = app.appID;
     coreApp.bundle_id = app.bundleID.UTF8String ?: "";
     ipashelf::CancellationSource source;
-    auto result = client.version_identifiers(
+    auto result = client.version_list(
         account.coreAccount, coreApp, IPCorePlatform(platform), source.token());
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!result) {
@@ -561,13 +719,73 @@ static ipashelf::StoreClient MakeStoreClient(void) {
         return;
       }
       NSMutableArray<IPStoreVersion *> *versions = [NSMutableArray array];
-      for (const auto &identifier : result.value()) {
+      for (const auto &identifier : result.value().identifiers) {
         [versions addObject:[[IPStoreVersion alloc]
                                 initWithExternalID:[NSString stringWithUTF8String:
                                                                identifier.c_str()]
-                                    displayVersion:@""]];
+                                    displayVersion:@""
+                                       releaseDate:nil
+                                            latest:identifier ==
+                                                   result.value().latest]];
       }
       completion(versions, nil);
+    });
+  });
+}
+
+- (void)versionMetadataForApp:(IPStoreApp *)app
+                      account:(IPStoreAccount *)account
+            externalVersionID:(NSString *)externalVersionID
+                     platform:(IPStorePlatform)platform
+                   completion:(void (^)(IPStoreVersionMetadata *_Nullable,
+                                        NSError *_Nullable))completion {
+  dispatch_async(_queue, ^{
+    ipashelf::StoreClient client = MakeStoreClient();
+    ipashelf::App coreApp;
+    coreApp.id = app.appID;
+    coreApp.bundle_id = app.bundleID.UTF8String ?: "";
+    ipashelf::CancellationSource source;
+    auto result = client.version_metadata(
+        account.coreAccount, coreApp, externalVersionID.UTF8String ?: "",
+        IPCorePlatform(platform), source.token());
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!result) {
+        completion(nil, MakeError(result.error()));
+        return;
+      }
+      completion([[IPStoreVersionMetadata alloc] initWithMetadata:result.value()],
+                 nil);
+    });
+  });
+}
+
+- (void)ownedAppsForAccount:(IPStoreAccount *)account
+                   platform:(IPStorePlatform)platform
+                       page:(NSInteger)page
+                      limit:(NSInteger)limit
+                 completion:(void (^)(IPStoreOwnedAppsPage *_Nullable,
+                                      NSError *_Nullable))completion {
+  dispatch_async(_queue, ^{
+    if (account == nil) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        completion(nil, MakeErrorCode(IPStoreErrorUnauthorized,
+                                      @"Sign in before listing purchased apps."));
+      });
+      return;
+    }
+    ipashelf::StoreClient client = MakeStoreClient();
+    ipashelf::CancellationSource source;
+    std::optional<ipashelf::Platform> filter;
+    if (platform != IPStorePlatformAny) filter = IPCorePlatform(platform);
+    auto result = client.owned_apps(
+        account.coreAccount, filter, static_cast<int>(page),
+        static_cast<int>(limit), source.token());
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!result) {
+        completion(nil, MakeError(result.error()));
+        return;
+      }
+      completion([[IPStoreOwnedAppsPage alloc] initWithPage:result.value()], nil);
     });
   });
 }
@@ -635,9 +853,15 @@ static ipashelf::StoreClient MakeStoreClient(void) {
       @"User-Agent" : [NSString stringWithUTF8String:std::string(ipashelf::kDefaultUserAgent).c_str()],
     };
 
+    NSString *resumeKey = [NSString
+        stringWithFormat:@"%lld-%@", (long long)app.appID,
+                         [NSString stringWithUTF8String:
+                                       offerCopy.external_version_id.c_str()]
+                             ?: @"latest"];
     [[IPDownloadCenter shared]
         downloadURL:url
            headers:headers
+         resumeKey:resumeKey
           progress:^(double fraction, long long received, long long expected) {
             if (progress != nil) progress(fraction, received, expected);
           }
@@ -662,6 +886,7 @@ static ipashelf::StoreClient MakeStoreClient(void) {
                               coreApp:coreApp
                           coreAccount:coreAccount
                               version:version
+                             platform:IPCorePlatform(platform)
                            completion:onMain];
           });
         }];
@@ -675,6 +900,7 @@ static ipashelf::StoreClient MakeStoreClient(void) {
                      coreApp:(ipashelf::App)coreApp
                  coreAccount:(ipashelf::Account)coreAccount
                      version:(std::string)version
+                    platform:(ipashelf::Platform)platform
                   completion:(void (^)(NSString *_Nullable, NSError *_Nullable))completion {
   NSFileManager *manager = [NSFileManager defaultManager];
   if (path.length == 0) {
@@ -721,6 +947,19 @@ static ipashelf::StoreClient MakeStoreClient(void) {
                                   @"Apple returned a package for a different app."));
     return;
   }
+  if (const auto platformStatus =
+          ipashelf::validate_ipa_platform(info.value(), platform);
+      !platformStatus) {
+    [manager removeItemAtPath:path error:nil];
+    completion(nil, MakeError(platformStatus.error()));
+    return;
+  }
+  auto sinfEntries = ipashelf::resolve_sinf_entries(info.value(), offer.sinfs);
+  if (!sinfEntries) {
+    [manager removeItemAtPath:path error:nil];
+    completion(nil, MakeError(sinfEntries.error()));
+    return;
+  }
 
   ipashelf::IpaPatchOptions options;
   options.source_path = source;
@@ -733,15 +972,9 @@ static ipashelf::StoreClient MakeStoreClient(void) {
                                                   SafeFilename(suffix)];
   NSString *destination = [IPStoreLibraryDirectory() stringByAppendingPathComponent:filename];
   options.destination_path = destination.fileSystemRepresentation;
-  const std::string sinfPath = ipashelf::default_sinf_path(info.value());
-  if (!offer.sinfs.empty() && !offer.sinfs.front().data.empty()) {
-    options.sinf = offer.sinfs.front().data;
-    options.sinf_path = sinfPath;
-  }
-  ipashelf::Account accountForMetadata = coreAccount;
-  options.metadata = ipashelf::build_itunes_metadata(
-      coreApp, offer, accountForMetadata,
-      options.sinf.empty() ? std::string() : sinfPath);
+  options.sinf_entries = std::move(sinfEntries).value();
+  options.metadata = ipashelf::build_itunes_metadata(offer, coreAccount);
+  options.artwork = FetchArtwork(offer.artwork_url);
 
   ipashelf::CancellationSource patchSource;
   auto status = ipashelf::write_patched_ipa(options, patchSource.token());

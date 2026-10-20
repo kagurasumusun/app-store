@@ -27,7 +27,6 @@
 		F52BC5D9EAFBA860F41B1AA9 /* IPInstallServer.mm in Sources */ = {isa = PBXBuildFile; fileRef = A1293A0FD09BAE099C7491DC /* IPInstallServer.mm */; };
 		00BC0B3A93890E185A31926F /* IPKeychain.mm in Sources */ = {isa = PBXBuildFile; fileRef = 5B73BB903521EAA71563AB79 /* IPKeychain.mm */; };
 		22EC30A34F23117D72A40507 /* IPModels.mm in Sources */ = {isa = PBXBuildFile; fileRef = 33319FAC71E4219AC9154722 /* IPModels.mm */; };
-		8205FBBA75581311288DF58A /* IPSAPBackend.mm in Sources */ = {isa = PBXBuildFile; fileRef = ED95A6C45A70F01025D7180A /* IPSAPBackend.mm */; };
 		F2290652F219ABC91C2E9221 /* IPStoreService.mm in Sources */ = {isa = PBXBuildFile; fileRef = E703966B024943A31BCA5440 /* IPStoreService.mm */; };
 		C92741F635614861322D4D24 /* bag.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0EED688DB846DA8813791DD4 /* bag.cpp */; };
 		46A6D26ED41DF68642ADC9E4 /* base.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FC2793BC358CF238CBD55198 /* base.cpp */; };
@@ -39,6 +38,9 @@
 		7C4EAD96585D08D00450F2D8 /* ota.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 699C239833A961096D11D2F2 /* ota.cpp */; };
 		B2CDB8A071CE881B3C6DBC01 /* plist.cpp in Sources */ = {isa = PBXBuildFile; fileRef = ED4D4D66CA4ECAAFE555128E /* plist.cpp */; };
 		C159A223796183E2E171B257 /* sap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1A2F93F6C38BB251698FF1B3 /* sap.cpp */; };
+		5A95F102A27C4E01B3D50002 /* sap_software.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5A95F101A27C4E01B3D50001 /* sap_software.cpp */; };
+		5A95F104A27C4E01B3D50004 /* sap_tables.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5A95F103A27C4E01B3D50003 /* sap_tables.cpp */; };
+		5A95F106A27C4E01B3D50006 /* owned_apps.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5A95F105A27C4E01B3D50005 /* owned_apps.cpp */; };
 		38F6A3A9AEAEA9695FE592E1 /* store_client.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 28025EC31DA02BB9AC74DC88 /* store_client.cpp */; };
 		BB80F2CCF6B45B249BD59028 /* url.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D7BB5EECB3F02C96439DFF7E /* url.cpp */; };
 		BF29F655294A7A55750C738A /* x509.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 69642038DE614F9D51958626 /* x509.cpp */; };
@@ -74,7 +76,6 @@
 		A1293A0FD09BAE099C7491DC /* IPInstallServer.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = IPInstallServer.mm; sourceTree = "<group>"; };
 		5B73BB903521EAA71563AB79 /* IPKeychain.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = IPKeychain.mm; sourceTree = "<group>"; };
 		33319FAC71E4219AC9154722 /* IPModels.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = IPModels.mm; sourceTree = "<group>"; };
-		ED95A6C45A70F01025D7180A /* IPSAPBackend.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = IPSAPBackend.mm; sourceTree = "<group>"; };
 		E703966B024943A31BCA5440 /* IPStoreService.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = IPStoreService.mm; sourceTree = "<group>"; };
 		2AD2C55CD4C4B8F363874210 /* IPInstallServer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IPInstallServer.h; sourceTree = "<group>"; };
 		5BB99384AADB75C28F12B2FF /* IPInternal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IPInternal.h; sourceTree = "<group>"; };
@@ -90,6 +91,8 @@
 		EBDFAF1461ACC8204CB4C9D6 /* ota.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ota.hpp; sourceTree = "<group>"; };
 		E9F6DB31BF8CBEDAB9BB8EAA /* plist.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = plist.hpp; sourceTree = "<group>"; };
 		3679BD362732B44FE20E0ADA /* sap.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = sap.hpp; sourceTree = "<group>"; };
+		5A95F107A27C4E01B3D50007 /* sap_software.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = sap_software.hpp; sourceTree = "<group>"; };
+		5A95F108A27C4E01B3D50008 /* sap_tables.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = sap_tables.hpp; sourceTree = "<group>"; };
 		3E07690D60ABE69175FF31D1 /* store_client.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = store_client.hpp; sourceTree = "<group>"; };
 		25D38BDBF249B8AF0BDB5BF9 /* url.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = url.hpp; sourceTree = "<group>"; };
 		B4AF42DC4EB43B484907EEE1 /* x509.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = x509.hpp; sourceTree = "<group>"; };
@@ -103,6 +106,9 @@
 		699C239833A961096D11D2F2 /* ota.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ota.cpp; sourceTree = "<group>"; };
 		ED4D4D66CA4ECAAFE555128E /* plist.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = plist.cpp; sourceTree = "<group>"; };
 		1A2F93F6C38BB251698FF1B3 /* sap.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = sap.cpp; sourceTree = "<group>"; };
+		5A95F101A27C4E01B3D50001 /* sap_software.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = sap_software.cpp; sourceTree = "<group>"; };
+		5A95F103A27C4E01B3D50003 /* sap_tables.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = sap_tables.cpp; sourceTree = "<group>"; };
+		5A95F105A27C4E01B3D50005 /* owned_apps.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = owned_apps.cpp; sourceTree = "<group>"; };
 		28025EC31DA02BB9AC74DC88 /* store_client.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = store_client.cpp; sourceTree = "<group>"; };
 		D7BB5EECB3F02C96439DFF7E /* url.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = url.cpp; sourceTree = "<group>"; };
 		69642038DE614F9D51958626 /* x509.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = x509.cpp; sourceTree = "<group>"; };
@@ -199,7 +205,6 @@
 				A1293A0FD09BAE099C7491DC /* IPInstallServer.mm */,
 				A300586F167D2228EA46116B /* IPDeviceIdentity.mm */,
 				E703966B024943A31BCA5440 /* IPStoreService.mm */,
-				ED95A6C45A70F01025D7180A /* IPSAPBackend.mm */,
 			);
 			name = Bridge;
 			path = Bridge;
@@ -242,6 +247,9 @@
 				0EED688DB846DA8813791DD4 /* bag.cpp */,
 				1543997BE659B932F6FC9189 /* crypto.cpp */,
 				1A2F93F6C38BB251698FF1B3 /* sap.cpp */,
+				5A95F101A27C4E01B3D50001 /* sap_software.cpp */,
+				5A95F103A27C4E01B3D50003 /* sap_tables.cpp */,
+				5A95F105A27C4E01B3D50005 /* owned_apps.cpp */,
 				28025EC31DA02BB9AC74DC88 /* store_client.cpp */,
 				5BAFA0BD9D7997D8783D3EB1 /* http.cpp */,
 				60B014745F8E1021B1D3FB79 /* json.cpp */,
@@ -272,6 +280,8 @@
 				1C98EDE3F3A5CC19C918F2F1 /* ipa.hpp */,
 				25D38BDBF249B8AF0BDB5BF9 /* url.hpp */,
 				3679BD362732B44FE20E0ADA /* sap.hpp */,
+				5A95F107A27C4E01B3D50007 /* sap_software.hpp */,
+				5A95F108A27C4E01B3D50008 /* sap_tables.hpp */,
 				3E07690D60ABE69175FF31D1 /* store_client.hpp */,
 				621A9950114D0C449E2242B6 /* base.hpp */,
 				7DA3A34375913ECA18151096 /* http.hpp */,
@@ -424,7 +434,6 @@
 				F52BC5D9EAFBA860F41B1AA9 /* IPInstallServer.mm in Sources */,
 				00BC0B3A93890E185A31926F /* IPKeychain.mm in Sources */,
 				22EC30A34F23117D72A40507 /* IPModels.mm in Sources */,
-				8205FBBA75581311288DF58A /* IPSAPBackend.mm in Sources */,
 				F2290652F219ABC91C2E9221 /* IPStoreService.mm in Sources */,
 				C92741F635614861322D4D24 /* bag.cpp in Sources */,
 				46A6D26ED41DF68642ADC9E4 /* base.cpp in Sources */,
@@ -436,6 +445,9 @@
 				7C4EAD96585D08D00450F2D8 /* ota.cpp in Sources */,
 				B2CDB8A071CE881B3C6DBC01 /* plist.cpp in Sources */,
 				C159A223796183E2E171B257 /* sap.cpp in Sources */,
+				5A95F102A27C4E01B3D50002 /* sap_software.cpp in Sources */,
+				5A95F104A27C4E01B3D50004 /* sap_tables.cpp in Sources */,
+				5A95F106A27C4E01B3D50006 /* owned_apps.cpp in Sources */,
 				38F6A3A9AEAEA9695FE592E1 /* store_client.cpp in Sources */,
 				BB80F2CCF6B45B249BD59028 /* url.cpp in Sources */,
 				BF29F655294A7A55750C738A /* x509.cpp in Sources */,

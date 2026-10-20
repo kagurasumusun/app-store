@@ -6,9 +6,16 @@
 
 #import "IPInternal.h"
 
-// NSURLSession follows redirects by default, which would silently forward the
-// signed authentication body to whatever host Location names. The core checks
-// every redirect target itself, so the transport disables automatic redirects.
+// Redirect policy is per request. Requests that carry credentials or SAP
+// signatures (sign-in, ent/download, purchase history) must never be
+// forwarded automatically: the core inspects every Location itself, re-signs
+// and only then retries. Those core requests arrive with follow_redirects
+// cleared, and the transport marks their tasks so this delegate refuses the
+// redirect and surfaces the 3xx response instead. Every other request (bag,
+// catalog, legacy download endpoints) follows redirects like a normal HTTP
+// client, matching what the core expects.
+static NSString *const kIPNoRedirectTaskDescription = @"ipashelf-no-redirect";
+
 @interface IPNoRedirectDelegate : NSObject <NSURLSessionTaskDelegate>
 @end
 
@@ -18,7 +25,11 @@
     willPerformHTTPRedirection:(NSHTTPURLResponse *)response
                     newRequest:(NSURLRequest *)request
              completionHandler:(void (^)(NSURLRequest *_Nullable))completionHandler {
-  completionHandler(nil);
+  if ([task.taskDescription isEqualToString:kIPNoRedirectTaskDescription]) {
+    completionHandler(nil);
+  } else {
+    completionHandler(request);
+  }
 }
 @end
 
@@ -86,6 +97,22 @@ class IPHTTPTransport final : public ipashelf::HttpTransport {
       urlRequest.HTTPBody = [NSData dataWithBytes:request.body.data()
                                            length:request.body.size()];
     }
+    if (request.range_start.has_value()) {
+      // Partial-zip version inspection reads the package with range GETs.
+      NSString *range;
+      if (request.range_end.has_value()) {
+        range = [NSString stringWithFormat:@"bytes=%llu-%llu",
+                                           (unsigned long long)*request.range_start,
+                                           (unsigned long long)*request.range_end];
+      } else {
+        range = [NSString stringWithFormat:@"bytes=%llu-",
+                                           (unsigned long long)*request.range_start];
+      }
+      [urlRequest setValue:range forHTTPHeaderField:@"Range"];
+      // A transcoded body would invalidate the byte offsets the core is
+      // about to verify against Content-Range.
+      [urlRequest setValue:@"identity" forHTTPHeaderField:@"Accept-Encoding"];
+    }
 
     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
     auto response = std::make_shared<ipashelf::HttpResponse>();
@@ -128,6 +155,9 @@ class IPHTTPTransport final : public ipashelf::HttpTransport {
             }
             dispatch_semaphore_signal(semaphore);
           }];
+    if (!request.follow_redirects) {
+      task.taskDescription = kIPNoRedirectTaskDescription;
+    }
     [task resume];
 
     const dispatch_time_t deadline =

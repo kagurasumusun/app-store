@@ -31,6 +31,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readwrite) double price;
 @property (nonatomic, readwrite) BOOL hasInAppPurchases;
 @property (nonatomic, copy, readwrite) NSArray<NSString *> *platforms;
+@property (nonatomic, copy, readwrite, nullable) NSDate *purchaseDate;
 #ifdef __cplusplus
 - (instancetype)initWithApp:(const ipashelf::App &)app;
 #endif
@@ -55,8 +56,30 @@ NS_ASSUME_NONNULL_BEGIN
 @interface IPStoreVersion ()
 @property (nonatomic, copy, readwrite) NSString *externalVersionID;
 @property (nonatomic, copy, readwrite) NSString *displayVersion;
+@property (nonatomic, copy, readwrite, nullable) NSDate *releaseDate;
+@property (nonatomic, readwrite, getter=isLatest) BOOL latest;
 - (instancetype)initWithExternalID:(NSString *)externalID
-                    displayVersion:(NSString *)displayVersion;
+                    displayVersion:(NSString *)displayVersion
+                       releaseDate:(nullable NSDate *)releaseDate
+                            latest:(BOOL)latest;
+@end
+
+@interface IPStoreVersionMetadata ()
+@property (nonatomic, copy, readwrite) NSString *displayVersion;
+@property (nonatomic, copy, readwrite, nullable) NSDate *releaseDate;
+#ifdef __cplusplus
+- (instancetype)initWithMetadata:(const ipashelf::AppVersionMetadata &)metadata;
+#endif
+@end
+
+@interface IPStoreOwnedAppsPage ()
+@property (nonatomic, copy, readwrite) NSArray<IPStoreApp *> *apps;
+@property (nonatomic, readwrite) NSInteger total;
+@property (nonatomic, readwrite) NSInteger page;
+@property (nonatomic, readwrite) NSInteger limit;
+#ifdef __cplusplus
+- (instancetype)initWithPage:(const ipashelf::OwnedAppsPage &)page;
+#endif
 @end
 
 @interface IPStoreReview ()
@@ -126,9 +149,9 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 #ifdef __cplusplus
-/// Performs the CoreFP/AppleMediaServices SAP handshake using the symbols that
-/// Apple ships with iOS.
-ipashelf::Result<std::shared_ptr<ipashelf::SapBackend>> IPCreateSAPBackend();
+// SAP signing needs no platform backend: the core ships a complete
+// pure-software implementation of the SAP v200 protocol (see
+// Core/src/sap_software.cpp), selected automatically when no factory is set.
 
 /// Shared NSURLSession-backed transport used by every StoreClient.
 ipashelf::HttpTransport &IPSharedHTTPTransport();

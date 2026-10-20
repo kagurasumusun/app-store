@@ -14,6 +14,8 @@ typedef NS_ENUM(NSInteger, IPStorePlatform) {
   IPStorePlatformTV,
   IPStorePlatformWatch,
   IPStorePlatformVision,
+  /// No platform constraint (purchase-history listing only).
+  IPStorePlatformAny,
 };
 
 typedef NS_ENUM(NSInteger, IPStoreErrorCode) {
@@ -68,6 +70,9 @@ FOUNDATION_EXPORT NSErrorDomain const IPStoreErrorDomain;
 @property (nonatomic, readonly) double price;
 @property (nonatomic, readonly) BOOL hasInAppPurchases NS_SWIFT_NAME(hasInAppPurchases);
 @property (nonatomic, copy, readonly) NSArray<NSString *> *platforms NS_SWIFT_NAME(platforms);
+/// When the signed-in account acquired the app; only set for purchase
+/// history entries.
+@property (nonatomic, copy, readonly, nullable) NSDate *purchaseDate NS_SWIFT_NAME(purchaseDate);
 @end
 
 /// One customer review from Apple's public review feed.
@@ -123,7 +128,28 @@ FOUNDATION_EXPORT NSErrorDomain const IPStoreErrorDomain;
 
 @interface IPStoreVersion : NSObject
 @property (nonatomic, copy, readonly) NSString *externalVersionID NS_SWIFT_NAME(externalVersionID);
+/// Marketing version read from the package itself; empty until the version
+/// metadata has been loaded.
 @property (nonatomic, copy, readonly) NSString *displayVersion;
+/// Release date read from the package; nil until metadata has been loaded.
+@property (nonatomic, copy, readonly, nullable) NSDate *releaseDate;
+/// Whether this is the build the store currently serves by default.
+@property (nonatomic, readonly, getter=isLatest) BOOL latest;
+@end
+
+/// Display version and release date of a single external version, read from
+/// the package's own Info.plist.
+@interface IPStoreVersionMetadata : NSObject
+@property (nonatomic, copy, readonly) NSString *displayVersion;
+@property (nonatomic, copy, readonly, nullable) NSDate *releaseDate;
+@end
+
+/// One page of the account's purchase history.
+@interface IPStoreOwnedAppsPage : NSObject
+@property (nonatomic, copy, readonly) NSArray<IPStoreApp *> *apps;
+@property (nonatomic, readonly) NSInteger total;
+@property (nonatomic, readonly) NSInteger page;
+@property (nonatomic, readonly) NSInteger limit;
 @end
 
 @interface IPStoreService : NSObject
@@ -186,6 +212,28 @@ FOUNDATION_EXPORT NSErrorDomain const IPStoreErrorDomain;
                 completion:(void (^)(NSArray<IPStoreVersion *> *_Nullable versions,
                                      NSError *_Nullable error))completion
     NS_SWIFT_NAME(listVersions(app:account:platform:completion:));
+
+/// Resolves the marketing version and release date of one external version
+/// by reading the package's Info.plist over HTTP range requests. The full
+/// package is never downloaded.
+- (void)versionMetadataForApp:(IPStoreApp *)app
+                      account:(IPStoreAccount *)account
+            externalVersionID:(NSString *)externalVersionID
+                     platform:(IPStorePlatform)platform
+                   completion:(void (^)(IPStoreVersionMetadata *_Nullable metadata,
+                                        NSError *_Nullable error))completion
+    NS_SWIFT_NAME(versionMetadata(app:account:externalVersionID:platform:completion:));
+
+/// Lists the apps the account owns, newest purchase first. `platform` may be
+/// IPStorePlatformAny to skip filtering; page is 1-based and limit must not
+/// exceed 100.
+- (void)ownedAppsForAccount:(IPStoreAccount *)account
+                   platform:(IPStorePlatform)platform
+                       page:(NSInteger)page
+                      limit:(NSInteger)limit
+                 completion:(void (^)(IPStoreOwnedAppsPage *_Nullable page,
+                                      NSError *_Nullable error))completion
+    NS_SWIFT_NAME(ownedApps(account:platform:page:limit:completion:));
 
 - (void)reviewsForAppID:(long long)appID
                  region:(NSString *)region

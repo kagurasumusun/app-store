@@ -64,6 +64,10 @@ static NSArray<NSString *> *IPPlatforms(const std::vector<ipashelf::Platform> &p
     _price = app.price;
     _hasInAppPurchases = app.has_arcade_offer;
     _platforms = IPPlatforms(app.platforms) ?: @[];
+    if (app.purchase_date_unix > 0) {
+      _purchaseDate = [NSDate dateWithTimeIntervalSince1970:static_cast<NSTimeInterval>(
+                                                                app.purchase_date_unix)];
+    }
   }
   return self;
 }
@@ -208,11 +212,51 @@ static NSArray<NSString *> *IPPlatforms(const std::vector<ipashelf::Platform> &p
 @implementation IPStoreVersion
 
 - (instancetype)initWithExternalID:(NSString *)externalID
-                    displayVersion:(NSString *)displayVersion {
+                    displayVersion:(NSString *)displayVersion
+                       releaseDate:(nullable NSDate *)releaseDate
+                            latest:(BOOL)latest {
   self = [super init];
   if (self != nil) {
     _externalVersionID = [externalID copy];
     _displayVersion = [displayVersion copy];
+    _releaseDate = [releaseDate copy];
+    _latest = latest;
+  }
+  return self;
+}
+
+@end
+
+@implementation IPStoreVersionMetadata
+
+- (instancetype)initWithMetadata:(const ipashelf::AppVersionMetadata &)metadata {
+  self = [super init];
+  if (self != nil) {
+    _displayVersion = IPString(metadata.display_version);
+    if (metadata.release_date_unix > 0) {
+      _releaseDate = [NSDate dateWithTimeIntervalSince1970:static_cast<NSTimeInterval>(
+                                                                metadata.release_date_unix)];
+    }
+  }
+  return self;
+}
+
+@end
+
+@implementation IPStoreOwnedAppsPage
+
+- (instancetype)initWithPage:(const ipashelf::OwnedAppsPage &)page {
+  self = [super init];
+  if (self != nil) {
+    NSMutableArray<IPStoreApp *> *apps =
+        [NSMutableArray arrayWithCapacity:page.apps.size()];
+    for (const auto &app : page.apps) {
+      [apps addObject:[[IPStoreApp alloc] initWithApp:app]];
+    }
+    _apps = apps;
+    _total = static_cast<NSInteger>(page.total);
+    _page = static_cast<NSInteger>(page.page);
+    _limit = static_cast<NSInteger>(page.limit);
   }
   return self;
 }
