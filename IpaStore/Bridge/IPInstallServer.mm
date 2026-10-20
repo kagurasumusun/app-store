@@ -141,9 +141,29 @@ SecKeyRef IPCopyOrCreateKey(NSString *tag, NSError **error) CF_RETURNS_RETAINED 
   CFErrorRef cfError = NULL;
   SecKeyRef key = SecKeyCreateRandomKey((__bridge CFDictionaryRef)attributes,
                                         &cfError);
-  if (key == NULL && error != NULL) {
-    *error = IPInstallError(IPStoreErrorSignerUnavailable,
-                            @"Could not create the install-server key.");
+  if (key == NULL) {
+    // The failing OSStatus is what tells an entitlement problem apart from a
+    // keychain or algorithm problem, so surface it instead of a bland message.
+    NSString *detail = @"no error was reported";
+    if (cfError != NULL) {
+      CFStringRef description = CFErrorCopyDescription(cfError);
+      if (description != NULL) {
+        detail = [NSString stringWithFormat:@"%@ (code %ld)",
+                                            CFBridgingRelease(description),
+                                            (long)CFErrorGetCode(cfError)];
+      } else {
+        detail = [NSString stringWithFormat:@"code %ld",
+                                            (long)CFErrorGetCode(cfError)];
+      }
+    }
+    NSLog(@"IPAShelf: creating the install-server key failed: %@ (lookup %d)",
+          detail, (int)found);
+    if (error != NULL) {
+      *error = IPInstallError(
+          IPStoreErrorSignerUnavailable,
+          [NSString stringWithFormat:@"Could not create the install-server key: %@",
+                                     detail]);
+    }
   }
   if (cfError != NULL) CFRelease(cfError);
   return key;
