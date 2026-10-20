@@ -193,6 +193,16 @@ jobs:
           nm -gU "$app_path/IpaStore" | grep -q 'IPInstallServer' && echo "Objective-C++ symbols linked"
           lipo -info "$app_path/IpaStore"
 
+      # The runner has no UI harness, so the app is installed in a simulator,
+      # launched to prove it reaches the first frame, then relaunched with
+      # -IPSmokeTest to exercise the Keychain, the generated CA, the listeners
+      # and the OTA router from inside the process.
+      - name: Run the app in the simulator
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          bash Scripts/smoke_test.sh 2>&1 | tee build/logs/smoke-driver.log
+
       - name: Validate generated certificates with openssl
         run: |
           set -euo pipefail
