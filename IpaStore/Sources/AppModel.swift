@@ -92,8 +92,7 @@ enum AppTab: String, Hashable, CaseIterable, Identifiable {
     case search
     case purchased
     case downloads
-    case library
-    case wishlist
+    case accounts
     case settings
 
     var id: String { rawValue }
@@ -103,8 +102,7 @@ enum AppTab: String, Hashable, CaseIterable, Identifiable {
         case .search: return "Search"
         case .purchased: return "Purchased"
         case .downloads: return "Downloads"
-        case .library: return "Library"
-        case .wishlist: return "Wishlist"
+        case .accounts: return "Accounts"
         case .settings: return "Settings"
         }
     }
@@ -114,8 +112,7 @@ enum AppTab: String, Hashable, CaseIterable, Identifiable {
         case .search: return "magnifyingglass"
         case .purchased: return "bag"
         case .downloads: return "arrow.down.circle"
-        case .library: return "square.stack.3d.up.fill"
-        case .wishlist: return "heart"
+        case .accounts: return "person.crop.circle"
         case .settings: return "gearshape"
         }
     }
@@ -127,6 +124,7 @@ final class AppModel {
     // Accounts
     var accounts: [StoreAccount] = []
     var activeAccount: StoreAccount?
+    var isRefreshingToken = false
 
     // Catalog
     var platform: StorePlatform = .iPhone
@@ -143,11 +141,6 @@ final class AppModel {
     // Details
     var versions: [Int64: [StoreVersion]] = [:]
     var versionErrors: [Int64: String] = [:]
-    var selectedVersion: [Int64: String] = [:]
-    var reviews: [Int64: [StoreReview]] = [:]
-    var reviewPages: [Int64: Int] = [:]
-    var reviewHasMore: [Int64: Bool] = [:]
-    var isLoadingReviews: Set<Int64> = []
 
     // Purchase history
     var ownedApps: [StoreApp] = []
@@ -161,14 +154,10 @@ final class AppModel {
     var ownedPlatformFilter: StorePlatform?
     var ownedSearch = ""
 
-    // Downloads and library
+    // Downloads and downloaded files
     var downloads: [DownloadItem] = []
     var library: [LibraryItem] = []
     var librarySearch = ""
-    var librarySort: LibrarySort = .name
-
-    // Wishlist
-    var wishlist: [WishlistEntry] = []
 
     // Installation
     var installService = InstallService()
@@ -177,25 +166,8 @@ final class AppModel {
     var selectedTab: AppTab = .search
     var alert: AlertMessage?
     var showLogin = false
-    var showAccounts = false
-    var showRegionPicker = false
 
     let service = StoreService()
-
-    enum LibrarySort: String, CaseIterable, Identifiable {
-        case name
-        case recent
-        case size
-
-        var id: String { rawValue }
-        var title: String {
-            switch self {
-            case .name: return "Name"
-            case .recent: return "Recent"
-            case .size: return "Size"
-            }
-        }
-    }
 
     var deviceIdentifier: String { service.deviceIdentifier }
 
@@ -209,28 +181,17 @@ final class AppModel {
         storefronts.first { $0.code.caseInsensitiveCompare(region) == .orderedSame }
     }
 
-    var libraryGroups: [LibraryGroup] {
-        let filtered: [LibraryItem]
+    var runningDownloadCount: Int {
+        downloads.count { $0.state == .downloading || $0.state == .processing }
+    }
+
+    var visibleLibrary: [LibraryItem] {
         let needle = librarySearch.trimmingCharacters(in: .whitespacesAndNewlines)
-        if needle.isEmpty {
-            filtered = library
-        } else {
-            filtered = library.filter {
-                $0.name.localizedCaseInsensitiveContains(needle)
-                    || $0.bundleID.localizedCaseInsensitiveContains(needle)
-                    || $0.version.localizedCaseInsensitiveContains(needle)
-            }
-        }
-        let groups = LibraryGroup.groups(from: filtered)
-        switch librarySort {
-        case .name:
-            return groups
-        case .recent:
-            return groups.sorted {
-                ($0.latest?.downloadedAt ?? .distantPast) > ($1.latest?.downloadedAt ?? .distantPast)
-            }
-        case .size:
-            return groups.sorted { $0.totalSize > $1.totalSize }
+        guard !needle.isEmpty else { return library }
+        return library.filter {
+            $0.name.localizedCaseInsensitiveContains(needle)
+                || $0.bundleID.localizedCaseInsensitiveContains(needle)
+                || $0.version.localizedCaseInsensitiveContains(needle)
         }
     }
 
@@ -246,7 +207,6 @@ final class AppModel {
             platform = stored
         }
         recentSearches = UserDefaults.standard.stringArray(forKey: "IPAShelf.recentSearches") ?? []
-        loadWishlist()
         reloadAccounts()
         refreshLibrary()
         syncFilter()
@@ -263,7 +223,6 @@ final class AppModel {
             // of one account; never carry them across a switch.
             versions.removeAll()
             versionErrors.removeAll()
-            selectedVersion.removeAll()
             ownedApps.removeAll()
             ownedTotal = 0
             ownedPage = 0
@@ -280,7 +239,6 @@ final class AppModel {
     func setActive(_ account: StoreAccount) {
         service.setActiveAccount(account)
         reloadAccounts()
-        presentMessage("Signed in", "New downloads use \(account.email).")
     }
 
     func remove(_ account: StoreAccount) {
@@ -302,6 +260,38 @@ final class AppModel {
             present(error)
             return nil
         }
+    }
+
+    /// Rotates the account's password token with its stored password.
+    /// Returns the refreshed account, `.twoFactorRequired`, or nil (the
+    /// error has already been presented) when `presentError` is true.
+    func refreshToken(for account: StoreAccount,
+                      authCode: String? = nil,
+                      presentError: Bool = true) async -> LoginOutcome? {
+        guard !isRefreshingToken else { return nil }
+        isRefreshingToken = true
+        defer { isRefreshingToken = false }
+        do {
+            let outcome = try await service.refresh(account: account, authCode: authCode)
+            if case .signedIn = outcome {
+                reloadAccounts()
+            }
+            return outcome
+        } catch {
+            if presentError { present(error) }
+            return nil
+        }
+    }
+
+    /// Best-effort silent rotation used when an operation reports an expired
+    /// token: succeeds only when no verification code is needed.
+    private func refreshActiveSilently() async -> StoreAccount? {
+        guard let account = activeAccount, account.hasSavedPassword else { return nil }
+        let outcome = await refreshToken(for: account, presentError: false)
+        if case .signedIn(let refreshed) = outcome {
+            return refreshed
+        }
+        return nil
     }
 
     // MARK: Region and platform
@@ -329,18 +319,6 @@ final class AppModel {
 
     // MARK: Search
 
-    func searchIfNeeded() async {
-        let term = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard term.count >= 2 else {
-            searchResults = []
-            hasSearched = false
-            return
-        }
-        try? await Task.sleep(for: .milliseconds(350))
-        guard !Task.isCancelled else { return }
-        await search(term: term)
-    }
-
     func search(term: String) async {
         isSearching = true
         defer { isSearching = false }
@@ -356,15 +334,6 @@ final class AppModel {
             hasSearched = true
             present(error)
         }
-    }
-
-    func applyFilter(_ update: (inout SearchFilter) -> Void) {
-        update(&filter)
-        filter.region = region
-        filter.platform = platform
-        let term = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard term.count >= 2 else { return }
-        Task { await search(term: term) }
     }
 
     private func remember(term: String) {
@@ -389,7 +358,7 @@ final class AppModel {
 
     func loadVersions(for app: StoreApp, force: Bool = false) async {
         if !force, versions[app.appID] != nil { return }
-        guard let account = activeAccount else {
+        guard var account = activeAccount else {
             versionErrors[app.appID] = "Sign in to list every version Apple has issued for this app."
             return
         }
@@ -400,13 +369,25 @@ final class AppModel {
             versions[app.appID] = list
             versionErrors[app.appID] = nil
         } catch {
-            versionErrors[app.appID] = StoreError(error).message
+            let storeError = StoreError(error)
+            if storeError.code == .tokenExpired,
+               let refreshed = await refreshActiveSilently() {
+                account = refreshed
+                if let list = try? await service.listVersions(app: app,
+                                                              account: account,
+                                                              platform: platform) {
+                    versions[app.appID] = list
+                    versionErrors[app.appID] = nil
+                    return
+                }
+            }
+            versionErrors[app.appID] = storeError.message
         }
     }
 
-    /// Fills in a build's marketing version and release date by reading the
-    /// package itself. Called lazily as rows appear; failures simply leave
-    /// the raw build identifier in place.
+    /// Fills in a build's marketing version and release date from the pinned
+    /// download response. Called lazily as rows appear; failures simply
+    /// leave the raw build identifier in place.
     func enrichVersion(_ version: StoreVersion, for app: StoreApp) async {
         guard version.displayVersion.isEmpty, let account = activeAccount else { return }
         guard let metadata = try? await service.versionMetadata(
@@ -423,6 +404,33 @@ final class AppModel {
         versions[app.appID] = list
     }
 
+    func purchase(_ app: StoreApp) async {
+        guard let account = activeAccount else {
+            showLogin = true
+            return
+        }
+        do {
+            try await service.purchase(app: app, account: account, platform: platform)
+            presentMessage("Purchased", "\(app.name) was added to \(account.email).")
+            ownedPage = 0
+            hasLoadedOwned = false
+        } catch {
+            let storeError = StoreError(error)
+            if storeError.code == .tokenExpired,
+               let refreshed = await refreshActiveSilently() {
+                do {
+                    try await service.purchase(app: app, account: refreshed, platform: platform)
+                    presentMessage("Purchased", "\(app.name) was added to \(refreshed.email).")
+                    return
+                } catch {
+                    present(error)
+                    return
+                }
+            }
+            present(error)
+        }
+    }
+
     // MARK: Purchase history
 
     var ownedHasMore: Bool { ownedApps.count < ownedTotal }
@@ -436,8 +444,12 @@ final class AppModel {
         }
     }
 
+    func isOwned(_ appID: Int64) -> Bool {
+        ownedApps.contains { $0.appID == appID }
+    }
+
     func loadOwned(reset: Bool = false) async {
-        guard let account = activeAccount else {
+        guard var account = activeAccount else {
             ownedApps = []
             ownedTotal = 0
             ownedPage = 0
@@ -452,10 +464,25 @@ final class AppModel {
         defer { isLoadingOwned = false }
         let nextPage = reset ? 1 : ownedPage + 1
         do {
-            let result = try await service.ownedApps(account: account,
+            let result: StoreOwnedAppsPage
+            do {
+                result = try await service.ownedApps(account: account,
                                                       platform: ownedPlatformFilter,
                                                       page: nextPage,
                                                       limit: 100)
+            } catch {
+                // The purchase-history endpoint rejects an expired token
+                // the same way as the others; rotate once and retry.
+                guard StoreError(error).code == .tokenExpired,
+                      let refreshed = await refreshActiveSilently() else {
+                    throw error
+                }
+                account = refreshed
+                result = try await service.ownedApps(account: account,
+                                                      platform: ownedPlatformFilter,
+                                                      page: nextPage,
+                                                      limit: 100)
+            }
             if reset {
                 ownedApps = result.apps
             } else {
@@ -481,43 +508,6 @@ final class AppModel {
         Task { await loadOwned(reset: true) }
     }
 
-    func latestVersion(for app: StoreApp) async -> String? {
-        do {
-            return try await service.latestExternalVersion(app: app,
-                                                           region: region,
-                                                           platform: platform)
-        } catch {
-            return nil
-        }
-    }
-
-    func loadReviews(for app: StoreApp, nextPage: Bool = false) async {
-        if isLoadingReviews.contains(app.appID) { return }
-        let page = nextPage ? (reviewPages[app.appID] ?? 1) + 1 : 1
-        if nextPage, reviewHasMore[app.appID] == false { return }
-        isLoadingReviews.insert(app.appID)
-        defer { isLoadingReviews.remove(app.appID) }
-        do {
-            let result = try await service.reviews(appID: app.appID,
-                                                   region: region,
-                                                   page: page)
-            if nextPage {
-                reviews[app.appID, default: []].append(contentsOf: result.reviews)
-            } else {
-                reviews[app.appID] = result.reviews
-            }
-            reviewPages[app.appID] = result.page
-            reviewHasMore[app.appID] = result.hasMore
-        } catch {
-            // Review feeds are optional: an app may have none, or the
-            // storefront may not expose one.
-            if !nextPage {
-                reviews[app.appID] = []
-                reviewHasMore[app.appID] = false
-            }
-        }
-    }
-
     // MARK: Downloads
 
     func download(_ app: StoreApp, versionID: String? = nil) {
@@ -527,33 +517,46 @@ final class AppModel {
         }
         let item = DownloadItem(app: app, versionID: versionID)
         downloads.insert(item, at: 0)
+        selectedTab = .downloads
 
         Task {
-            do {
-                let url = try await service.download(
-                    app: app,
-                    account: account,
-                    externalVersionID: versionID,
-                    platform: platform,
-                    progress: { fraction, received, expected in
-                        Task { @MainActor in
-                            item.update(received: received, expected: expected, fraction: fraction)
-                            if fraction >= 1.0 { item.state = .processing }
-                        }
-                    })
-                item.savedPath = url.path
-                item.state = .finished
-                refreshLibrary()
-            } catch {
-                let storeError = StoreError(error)
-                if storeError.code == .cancelled {
-                    item.state = .cancelled
-                } else {
-                    item.state = .failed
-                    item.errorText = storeError.message
-                    present(error)
-                }
+            await runDownload(item, account: account, allowTokenRefresh: true)
+        }
+    }
+
+    private func runDownload(_ item: DownloadItem,
+                             account: StoreAccount,
+                             allowTokenRefresh: Bool) async {
+        do {
+            let url = try await service.download(
+                app: item.app,
+                account: account,
+                externalVersionID: item.versionID,
+                platform: platform,
+                progress: { fraction, received, expected in
+                    Task { @MainActor in
+                        item.update(received: received, expected: expected, fraction: fraction)
+                        if fraction >= 1.0 { item.state = .processing }
+                    }
+                })
+            item.savedPath = url.path
+            item.state = .finished
+            refreshLibrary()
+        } catch {
+            let storeError = StoreError(error)
+            if storeError.code == .cancelled {
+                item.state = .cancelled
+                return
             }
+            if storeError.code == .tokenExpired, allowTokenRefresh,
+               let refreshed = await refreshActiveSilently() {
+                item.errorText = nil
+                await runDownload(item, account: refreshed, allowTokenRefresh: false)
+                return
+            }
+            item.state = .failed
+            item.errorText = storeError.message
+            present(error)
         }
     }
 
@@ -573,7 +576,7 @@ final class AppModel {
         downloads.removeAll { $0.state == .finished || $0.state == .cancelled || $0.state == .failed }
     }
 
-    // MARK: Library
+    // MARK: Downloaded files
 
     func refreshLibrary() {
         let directory = service.libraryDirectory()
@@ -596,8 +599,12 @@ final class AppModel {
         refreshLibrary()
     }
 
-    func delete(_ group: LibraryGroup) {
-        for item in group.items { delete(item) }
+    func deleteAllLibraryItems() {
+        for item in library {
+            try? FileManager.default.removeItem(at: item.fileURL)
+            try? FileManager.default.removeItem(at: item.fileURL.appendingPathExtension("json"))
+        }
+        refreshLibrary()
     }
 
     func libraryItem(for download: DownloadItem) -> LibraryItem? {
@@ -605,54 +612,35 @@ final class AppModel {
         return library.first { $0.fileURL.path == path }
     }
 
+    /// Copies an externally provided IPA (Files app, share sheet) into the
+    /// download folder so it can be installed or shared like a download.
+    func importIPA(from url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer {
+            if scoped { url.stopAccessingSecurityScopedResource() }
+        }
+        let directory = service.libraryDirectory()
+        var destination = directory.appendingPathComponent(url.lastPathComponent)
+        var counter = 1
+        while FileManager.default.fileExists(atPath: destination.path) {
+            let stem = url.deletingPathExtension().lastPathComponent
+            destination = directory.appendingPathComponent("\(stem) (\(counter)).ipa")
+            counter += 1
+        }
+        do {
+            try FileManager.default.copyItem(at: url, to: destination)
+            refreshLibrary()
+            selectedTab = .downloads
+        } catch {
+            present(error)
+        }
+    }
+
     // MARK: Installation
 
     func install(_ item: LibraryItem) {
         installService.start(item: item)
         installService.isPresented = true
-    }
-
-    func presentInstallSheet() {
-        installService.prepareCertificate()
-        installService.isPresented = true
-    }
-
-    // MARK: Wishlist
-
-    func isWishlisted(_ app: StoreApp) -> Bool {
-        wishlist.contains { $0.appID == app.appID }
-    }
-
-    func toggleWishlist(_ app: StoreApp) {
-        if let index = wishlist.firstIndex(where: { $0.appID == app.appID }) {
-            wishlist.remove(at: index)
-        } else {
-            wishlist.insert(WishlistEntry(app: app), at: 0)
-        }
-        saveWishlist()
-    }
-
-    func removeWishlist(appID: Int64) {
-        wishlist.removeAll { $0.appID == appID }
-        saveWishlist()
-    }
-
-    func clearWishlist() {
-        wishlist.removeAll()
-        saveWishlist()
-    }
-
-    private func loadWishlist() {
-        guard let data = UserDefaults.standard.data(forKey: "IPAShelf.wishlist"),
-              let decoded = try? JSONDecoder().decode([WishlistEntry].self, from: data) else {
-            return
-        }
-        wishlist = decoded
-    }
-
-    private func saveWishlist() {
-        guard let data = try? JSONEncoder().encode(wishlist) else { return }
-        UserDefaults.standard.set(data, forKey: "IPAShelf.wishlist")
     }
 
     // MARK: Errors

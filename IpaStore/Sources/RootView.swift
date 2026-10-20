@@ -18,11 +18,9 @@ struct RootView: View {
             Tab(AppTab.downloads.title, systemImage: AppTab.downloads.systemImage, value: AppTab.downloads) {
                 DownloadsView()
             }
-            Tab(AppTab.library.title, systemImage: AppTab.library.systemImage, value: AppTab.library) {
-                LibraryView()
-            }
-            Tab(AppTab.wishlist.title, systemImage: AppTab.wishlist.systemImage, value: AppTab.wishlist) {
-                WishlistView()
+            .badge(model.runningDownloadCount)
+            Tab(AppTab.accounts.title, systemImage: AppTab.accounts.systemImage, value: AppTab.accounts) {
+                AccountsView()
             }
             Tab(AppTab.settings.title, systemImage: AppTab.settings.systemImage, value: AppTab.settings) {
                 SettingsView()
@@ -35,9 +33,6 @@ struct RootView: View {
         }
         .sheet(isPresented: $model.showLogin) {
             LoginView()
-        }
-        .sheet(isPresented: $model.showAccounts) {
-            AccountsView()
         }
         .alert(model.alert?.title ?? "Error",
                isPresented: Binding(

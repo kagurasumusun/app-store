@@ -77,6 +77,56 @@ final class StoreService: @unchecked Sendable {
         }
     }
 
+    /// Rotates the account's password token using its stored password.
+    /// Returns `.twoFactorRequired` when Apple wants a fresh code.
+    func refresh(account: StoreAccount, authCode: String?) async throws -> LoginOutcome {
+        try await withCheckedThrowingContinuation { continuation in
+            bridge.refresh(account: account.handle,
+                           authCode: authCode) { result, error in
+                if let error {
+                    continuation.resume(throwing: StoreError(error))
+                    return
+                }
+                guard let result else {
+                    continuation.resume(throwing: StoreError(
+                        code: .invalidResponse,
+                        message: "Apple returned an empty sign-in response."))
+                    return
+                }
+                if result.twoFactorRequired {
+                    continuation.resume(returning: .twoFactorRequired)
+                } else if let account = result.account {
+                    continuation.resume(returning: .signedIn(StoreAccount(handle: account)))
+                } else {
+                    continuation.resume(throwing: StoreError(
+                        code: .invalidResponse,
+                        message: "Apple did not return an account."))
+                }
+            }
+        }
+    }
+
+    /// Acquires the app's license without downloading it. Free apps only;
+    /// already-owned apps succeed.
+    func purchase(app: StoreApp,
+                  account: StoreAccount,
+                  platform: StorePlatform) async throws {
+        guard let handle = app.handle else {
+            throw StoreError(code: .invalidResponse, message: "Missing app handle.")
+        }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            bridge.purchase(app: handle,
+                            account: account.handle,
+                            platform: platform.bridge) { error in
+                if let error {
+                    continuation.resume(throwing: StoreError(error))
+                } else {
+                    continuation.resume(returning: ())
+                }
+            }
+        }
+    }
+
     func search(term: String,
                 region: String,
                 platform: StorePlatform,
@@ -133,37 +183,6 @@ final class StoreService: @unchecked Sendable {
         }
     }
 
-    func reviews(appID: Int64, region: String, page: Int) async throws -> StoreReviewsPage {
-        try await withCheckedThrowingContinuation { continuation in
-            bridge.reviews(appID: appID,
-                           region: region,
-                           page: page) { page, error in
-                if let error {
-                    continuation.resume(throwing: StoreError(error))
-                    return
-                }
-                guard let page else {
-                    continuation.resume(returning: StoreReviewsPage(page: 1,
-                                                                  hasMore: false,
-                                                                  reviews: []))
-                    return
-                }
-                let reviews = page.reviews.map {
-                    StoreReview(reviewID: $0.reviewID,
-                                author: $0.author,
-                                title: $0.title,
-                                body: $0.body,
-                                version: $0.version,
-                                updated: $0.updated,
-                                rating: Int($0.rating))
-                }
-                continuation.resume(returning: StoreReviewsPage(page: Int(page.page),
-                                                               hasMore: page.hasMore,
-                                                               reviews: reviews))
-            }
-        }
-    }
-
     func latestExternalVersion(app: StoreApp,
                                region: String,
                                platform: StorePlatform) async throws -> String {
@@ -207,8 +226,7 @@ final class StoreService: @unchecked Sendable {
     }
 
     /// Reads one build's marketing version and release date from the
-    /// package's own Info.plist (partial-zip range reads; the package itself
-    /// is not downloaded).
+    /// version-pinned download response (the package is not downloaded).
     func versionMetadata(app: StoreApp,
                          account: StoreAccount,
                          externalVersionID: String,

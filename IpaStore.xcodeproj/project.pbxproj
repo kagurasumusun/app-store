@@ -15,14 +15,12 @@
 		9012C75143B7BF6FA3897687 /* InstallService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4DCB726D41597F21D641D6B /* InstallService.swift */; };
 		92C1973F6840AC053839F6AA /* InstallSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DA8B8D57FFCAC18C64DC108 /* InstallSheet.swift */; };
 		5EBFF092CE2F0128B5A0605F /* IpaStoreApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0687B2F4F4417592179EC531 /* IpaStoreApp.swift */; };
-		FB8528F96CDFDA05780A738D /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3305336A9E4476FBC58FDAF3 /* LibraryView.swift */; };
 		19B94C1FF5339835DF657596 /* PurchasedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45E42225B2B5E719CFB3ECB7 /* PurchasedView.swift */; };
 		719BCE804E00AE3ADFB901EC /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BCEFB0AAE2E4C6F05C2CD1F /* RootView.swift */; };
 		E256E6A0B2076C137E95C750 /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6BCB8DF13BDAE68918A6516 /* SearchView.swift */; };
 		841E7512DEBDF432CA34C95E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D700D17156C1206C92E1D397 /* SettingsView.swift */; };
 		639497299EE83F02CD69C9D4 /* StoreService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2408AA2408B6D9F0662297FA /* StoreService.swift */; };
 		969031E91A1C7BECBA6FF8B6 /* StoreTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD54D316FC1494AFF8E5EEA2 /* StoreTypes.swift */; };
-		5B97A025CCA3EDB57A04A1D4 /* WishlistView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39550D0697AAC10B860E329A /* WishlistView.swift */; };
 		BE9E86C7311AD6E371B1E368 /* IPDeviceIdentity.mm in Sources */ = {isa = PBXBuildFile; fileRef = A300586F167D2228EA46116B /* IPDeviceIdentity.mm */; };
 		D983A22379AE9D1F1D240B35 /* IPHTTPTransport.mm in Sources */ = {isa = PBXBuildFile; fileRef = 93BA886642DB4B7CC3BABA5D /* IPHTTPTransport.mm */; };
 		F52BC5D9EAFBA860F41B1AA9 /* IPInstallServer.mm in Sources */ = {isa = PBXBuildFile; fileRef = A1293A0FD09BAE099C7491DC /* IPInstallServer.mm */; };
@@ -65,14 +63,12 @@
 		E4DCB726D41597F21D641D6B /* InstallService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallService.swift; sourceTree = "<group>"; };
 		6DA8B8D57FFCAC18C64DC108 /* InstallSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallSheet.swift; sourceTree = "<group>"; };
 		0687B2F4F4417592179EC531 /* IpaStoreApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IpaStoreApp.swift; sourceTree = "<group>"; };
-		3305336A9E4476FBC58FDAF3 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		45E42225B2B5E719CFB3ECB7 /* PurchasedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PurchasedView.swift; sourceTree = "<group>"; };
 		2BCEFB0AAE2E4C6F05C2CD1F /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		B6BCB8DF13BDAE68918A6516 /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
 		D700D17156C1206C92E1D397 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		2408AA2408B6D9F0662297FA /* StoreService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreService.swift; sourceTree = "<group>"; };
 		FD54D316FC1494AFF8E5EEA2 /* StoreTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreTypes.swift; sourceTree = "<group>"; };
-		39550D0697AAC10B860E329A /* WishlistView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WishlistView.swift; sourceTree = "<group>"; };
 		A300586F167D2228EA46116B /* IPDeviceIdentity.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = IPDeviceIdentity.mm; sourceTree = "<group>"; };
 		93BA886642DB4B7CC3BABA5D /* IPHTTPTransport.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = IPHTTPTransport.mm; sourceTree = "<group>"; };
 		A1293A0FD09BAE099C7491DC /* IPInstallServer.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = IPInstallServer.mm; sourceTree = "<group>"; };
@@ -178,8 +174,6 @@
 				0687B2F4F4417592179EC531 /* IpaStoreApp.swift */,
 				2408AA2408B6D9F0662297FA /* StoreService.swift */,
 				2BCEFB0AAE2E4C6F05C2CD1F /* RootView.swift */,
-				3305336A9E4476FBC58FDAF3 /* LibraryView.swift */,
-				39550D0697AAC10B860E329A /* WishlistView.swift */,
 				45E42225B2B5E719CFB3ECB7 /* PurchasedView.swift */,
 				5EAA8BEFFABD8E6E4544F677 /* Components.swift */,
 				63767D30038A4590E38C8D9F /* AccountsView.swift */,
@@ -425,14 +419,12 @@
 				9012C75143B7BF6FA3897687 /* InstallService.swift in Sources */,
 				92C1973F6840AC053839F6AA /* InstallSheet.swift in Sources */,
 				5EBFF092CE2F0128B5A0605F /* IpaStoreApp.swift in Sources */,
-				FB8528F96CDFDA05780A738D /* LibraryView.swift in Sources */,
 				19B94C1FF5339835DF657596 /* PurchasedView.swift in Sources */,
 				719BCE804E00AE3ADFB901EC /* RootView.swift in Sources */,
 				E256E6A0B2076C137E95C750 /* SearchView.swift in Sources */,
 				841E7512DEBDF432CA34C95E /* SettingsView.swift in Sources */,
 				639497299EE83F02CD69C9D4 /* StoreService.swift in Sources */,
 				969031E91A1C7BECBA6FF8B6 /* StoreTypes.swift in Sources */,
-				5B97A025CCA3EDB57A04A1D4 /* WishlistView.swift in Sources */,
 				BE9E86C7311AD6E371B1E368 /* IPDeviceIdentity.mm in Sources */,
 				D983A22379AE9D1F1D240B35 /* IPHTTPTransport.mm in Sources */,
 				F52BC5D9EAFBA860F41B1AA9 /* IPInstallServer.mm in Sources */,

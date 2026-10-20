@@ -4,75 +4,73 @@ import SwiftUI
 
 struct AccountsView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-    @State private var showLogin = false
-    @State private var pendingRemoval: StoreAccount?
+    @State private var accountToRemove: StoreAccount?
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    if model.accounts.isEmpty {
-                        Text("No accounts yet. Add the Apple Account you use for App Store purchases.")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(model.accounts) { account in
-                            Button {
-                                model.setActive(account)
-                            } label: {
-                                AccountRow(account: account,
-                                           isActive: account == model.activeAccount)
-                            }
-                            .buttonStyle(.plain)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                Button(role: .destructive) {
-                                    pendingRemoval = account
-                                } label: {
-                                    Label("Remove", systemImage: "trash")
+            ZStack {
+                AppBackground()
+                if model.accounts.isEmpty {
+                    EmptyStateView(symbol: "person.crop.circle.badge.plus",
+                                   title: "No accounts",
+                                   message: "Sign in with an Apple ID to purchase free apps and download packages, including older versions.",
+                                   actionTitle: "Sign In",
+                                   action: { model.showLogin = true })
+                } else {
+                    List {
+                        Section {
+                            ForEach(model.accounts) { account in
+                                NavigationLink(value: account) {
+                                    AccountRow(account: account,
+                                               isActive: account == model.activeAccount)
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) {
+                                        accountToRemove = account
+                                    } label: {
+                                        Label("Remove", systemImage: "trash")
+                                    }
+                                    if account != model.activeAccount {
+                                        Button {
+                                            model.setActive(account)
+                                        } label: {
+                                            Label("Use", systemImage: "checkmark.circle")
+                                        }
+                                        .tint(.indigo)
+                                    }
                                 }
                             }
+                        } footer: {
+                            Text("The active account is used for purchases, downloads and the purchase history. Passwords and tokens stay in the Keychain.")
                         }
                     }
-                } header: {
-                    Text("Accounts")
-                } footer: {
-                    Text("Account credentials and tokens are stored in the Keychain. Switching accounts changes the storefront used for new requests.")
-                }
-
-                Section {
-                    Button {
-                        showLogin = true
-                    } label: {
-                        Label("Add Apple Account", systemImage: "plus.circle.fill")
-                    }
-                }
-
-                Section("Protocol identity") {
-                    InfoRow(label: "Device ID", value: model.deviceIdentifier)
+                    .listStyle(.insetGrouped)
+                    .scrollContentBackground(.hidden)
                 }
             }
             .navigationTitle("Accounts")
-            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        model.showLogin = true
+                    } label: {
+                        Label("Add Account", systemImage: "plus")
+                    }
                 }
             }
-            .sheet(isPresented: $showLogin) {
-                LoginView()
+            .navigationDestination(for: StoreAccount.self) { account in
+                AccountDetailView(account: account)
             }
             .confirmationDialog("Remove this account?",
                                 isPresented: Binding(
-                                    get: { pendingRemoval != nil },
-                                    set: { if !$0 { pendingRemoval = nil } }),
+                                    get: { accountToRemove != nil },
+                                    set: { if !$0 { accountToRemove = nil } }),
                                 titleVisibility: .visible) {
                 Button("Remove", role: .destructive) {
-                    if let pendingRemoval { model.remove(pendingRemoval) }
-                    pendingRemoval = nil
+                    if let accountToRemove { model.remove(accountToRemove) }
                 }
             } message: {
-                Text("The token and password for this account are deleted from the Keychain. Downloaded packages stay on disk.")
+                Text("Its Keychain entry will be deleted. Downloaded packages remain.")
             }
         }
     }
@@ -85,210 +83,247 @@ private struct AccountRow: View {
     var body: some View {
         HStack(spacing: 12) {
             ZStack {
-                Circle().fill(Color.indigo.opacity(0.15))
-                Text(initials)
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(.indigo)
+                Circle()
+                    .fill(Color.indigo.opacity(isActive ? 0.85 : 0.25))
+                    .frame(width: 42, height: 42)
+                Text(account.initial)
+                    .font(.headline)
+                    .foregroundStyle(isActive ? Color.white : Color.indigo)
             }
-            .frame(width: 38, height: 38)
-
             VStack(alignment: .leading, spacing: 2) {
                 Text(account.name.isEmpty ? account.email : account.name)
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(.primary)
-                Text(account.email)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text("\(account.email) · \(account.region)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             Spacer()
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(account.region)
+            if isActive {
+                Label("Active", systemImage: "checkmark.circle.fill")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                if !account.storefront.isEmpty {
-                    Text("Front \(account.storefront)")
-                        .font(.system(size: 9).monospaced())
-                        .foregroundStyle(.tertiary)
+                    .foregroundStyle(.green)
+                    .labelStyle(.iconOnly)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct AccountDetailView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let account: StoreAccount
+
+    @State private var needsCode = false
+    @State private var authCode = ""
+    @State private var didRefresh = false
+    @State private var showRemove = false
+
+    /// The stored copy, refreshed after rotation or activation changes.
+    private var current: StoreAccount {
+        model.accounts.first { $0.email == account.email } ?? account
+    }
+
+    var body: some View {
+        List {
+            Section {
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.indigo.opacity(0.85))
+                            .frame(width: 52, height: 52)
+                        Text(current.initial)
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(.white)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(current.name.isEmpty ? current.email : current.name)
+                            .font(.headline)
+                        Text(current.email)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                if isActive {
-                    Text("ACTIVE")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.indigo)
+                .padding(.vertical, 4)
+                InfoRow(label: "Region", value: current.region)
+                InfoRow(label: "Storefront", value: current.storefront)
+                if !current.directoryServicesID.isEmpty {
+                    InfoRow(label: "DSID", value: String(current.directoryServicesID.prefix(4)) + "…")
+                }
+                InfoRow(label: "Password saved", value: current.hasSavedPassword ? "Yes" : "No")
+            }
+
+            Section {
+                if current != model.activeAccount {
+                    Button {
+                        model.setActive(current)
+                    } label: {
+                        Label("Use This Account", systemImage: "checkmark.circle")
+                    }
+                }
+                if needsCode {
+                    TextField("Verification code", text: $authCode)
+                        .keyboardType(.numberPad)
+                        .textContentType(.oneTimeCode)
+                }
+                Button {
+                    Task { await rotate() }
+                } label: {
+                    HStack {
+                        Label(needsCode ? "Refresh with Code" : "Refresh Token",
+                              systemImage: "arrow.triangle.2.circlepath")
+                        Spacer()
+                        if model.isRefreshingToken {
+                            ProgressView().controlSize(.small)
+                        } else if didRefresh {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                        }
+                    }
+                }
+                .disabled(!current.hasSavedPassword || model.isRefreshingToken
+                          || (needsCode && authCode.count != 6))
+            } header: {
+                Text("Token")
+            } footer: {
+                Text(current.hasSavedPassword
+                     ? "Apple periodically expires the download token. Refresh signs in again with the saved password and stores the new token. IPAShelf also does this automatically when a download reports an expired token."
+                     : "This account was added without saving its password, so it cannot be refreshed automatically. Remove it and sign in again.")
+            }
+
+            Section {
+                Button(role: .destructive) {
+                    showRemove = true
+                } label: {
+                    Label("Remove Account", systemImage: "trash")
                 }
             }
         }
-        .contentShape(Rectangle())
-        .padding(.vertical, 2)
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(AppBackground())
+        .navigationTitle("Account")
+        .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("Remove this account?",
+                            isPresented: $showRemove,
+                            titleVisibility: .visible) {
+            Button("Remove", role: .destructive) {
+                model.remove(current)
+                dismiss()
+            }
+        } message: {
+            Text("Its Keychain entry will be deleted. Downloaded packages remain.")
+        }
     }
 
-    private var initials: String {
-        let source = account.name.isEmpty ? account.email : account.name
-        let parts = source.split(separator: " ")
-        let letters = parts.prefix(2).compactMap { $0.first }
-        return letters.isEmpty ? "?" : String(letters).uppercased()
+    private func rotate() async {
+        let outcome = await model.refreshToken(
+            for: current,
+            authCode: needsCode ? authCode : nil)
+        switch outcome {
+        case .signedIn:
+            didRefresh = true
+            needsCode = false
+            authCode = ""
+        case .twoFactorRequired:
+            needsCode = true
+        case nil:
+            break
+        }
     }
 }
+
+// MARK: - Sign in
 
 struct LoginView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
-    private enum Stage {
-        case credentials
-        case twoFactor
-    }
-
-    @State private var stage: Stage = .credentials
     @State private var email = ""
     @State private var password = ""
-    @State private var code = ""
-    @State private var region = "US"
-    @State private var isWorking = false
-    @State private var errorMessage: String?
+    @State private var authCode = ""
+    @State private var needsCode = false
+    @State private var isBusy = false
 
-    private var regions: [StoreStorefront] { model.storefronts }
+    private var canSubmit: Bool {
+        email.contains("@") && email.contains(".")
+            && !password.isEmpty
+            && (!needsCode || authCode.count == 6)
+            && !isBusy
+    }
 
     var body: some View {
         NavigationStack {
             Form {
-                if stage == .credentials {
-                    credentials
-                } else {
-                    twoFactor
-                }
-
-                if let errorMessage {
-                    Section {
-                        Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
+                Section {
+                    TextField("Apple ID email", text: $email)
+                        .keyboardType(.emailAddress)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .textContentType(.emailAddress)
+                    SecureField("Password", text: $password)
+                        .textContentType(.password)
+                    if needsCode {
+                        TextField("Verification code", text: $authCode)
+                            .keyboardType(.numberPad)
+                            .textContentType(.oneTimeCode)
                     }
+                } header: {
+                    Text("Apple ID")
+                } footer: {
+                    Text(needsCode
+                         ? "Enter the six-digit code Apple sent to your trusted devices."
+                         : "Credentials are sent only to Apple over SAP-signed requests and stored in the Keychain so the download token can be refreshed later.")
                 }
 
                 Section {
-                    Label("Every request is SAP-signed on this device before it is sent. Credentials are never sent to any server other than Apple’s.",
-                          systemImage: "lock.shield")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Button {
+                        Task { await submit() }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if isBusy {
+                                ProgressView()
+                            } else {
+                                Text(needsCode ? "Verify and Sign In" : "Sign In")
+                                    .font(.headline)
+                            }
+                            Spacer()
+                        }
+                    }
+                    .disabled(!canSubmit)
                 }
             }
-            .navigationTitle(stage == .credentials ? "Sign In" : "Two-Factor Code")
+            .scrollContentBackground(.hidden)
+            .background(AppBackground())
+            .navigationTitle("Sign In")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(stage == .credentials ? "Sign In" : "Verify") {
-                        Task { await submit() }
-                    }
-                    .disabled(!canSubmit || isWorking)
-                }
-            }
-            .interactiveDismissDisabled(isWorking)
-        }
-        .onAppear {
-            region = model.activeAccount?.region ?? model.region
-        }
-    }
-
-    private var credentials: some View {
-        Group {
-            Section("Apple Account") {
-                TextField("Email", text: $email)
-                    .keyboardType(.emailAddress)
-                    .textContentType(.username)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                SecureField("Password", text: $password)
-                    .textContentType(.password)
-            }
-
-            Section {
-                Picker("Country or Region", selection: $region) {
-                    ForEach(regions) { storefront in
-                        Text("\(storefront.flag) \(storefront.name) (\(storefront.currency))")
-                            .tag(storefront.code)
-                    }
-                }
-                .pickerStyle(.navigationLink)
-            } header: {
-                Text("Storefront")
-            } footer: {
-                Text("Apple associates purchases with the storefront of the account. Choose the region where the account was created.")
-            }
-        }
-    }
-
-    private var twoFactor: some View {
-        Group {
-            Section {
-                Text("Enter the six-digit code shown on your other Apple devices. It refreshes every few minutes.")
-                    .font(.subheadline)
-            }
-            Section("Verification Code") {
-                TextField("123456", text: $code)
-                    .keyboardType(.numberPad)
-                    .textContentType(.oneTimeCode)
-                    .font(.title3.monospacedDigit())
-                    .onChange(of: code) { _, newValue in
-                        code = String(newValue.filter(\.isNumber).prefix(6))
-                    }
-            }
-            Section {
-                Button("Use a different account") {
-                    stage = .credentials
-                    code = ""
-                    errorMessage = nil
+                        .disabled(isBusy)
                 }
             }
         }
-    }
-
-    private var canSubmit: Bool {
-        if stage == .credentials {
-            return email.contains("@") && password.count >= 1
-        }
-        return code.count == 6
     }
 
     private func submit() async {
-        guard canSubmit else { return }
-        isWorking = true
-        errorMessage = nil
-        defer { isWorking = false }
-
-        do {
-            let outcome = try await model.service.login(
-                email: email.trimmingCharacters(in: .whitespacesAndNewlines),
-                password: password,
-                authCode: stage == .twoFactor ? code : nil,
-                region: region)
-            switch outcome {
-            case .signedIn:
-                model.reloadAccounts()
-                password = ""
-                code = ""
-                dismiss()
-            case .twoFactorRequired:
-                stage = .twoFactor
-            }
-        } catch {
-            let storeError = StoreError(error)
-            errorMessage = message(for: storeError)
-        }
-    }
-
-    private func message(for error: StoreError) -> String {
-        switch error.code {
-        case .signerUnavailable:
-            return "The SAP signer could not be started. Restart the app and try again."
-        case .unauthorized:
-            return "Apple rejected the credentials. Check the password, or enter the current two-factor code."
-        case .network:
-            return "The network request failed. Check the connection and try again."
-        default:
-            return error.message
+        isBusy = true
+        defer { isBusy = false }
+        let outcome = await model.login(
+            email: email.trimmingCharacters(in: .whitespacesAndNewlines),
+            password: password,
+            authCode: needsCode ? authCode : nil,
+            region: model.region)
+        switch outcome {
+        case .signedIn:
+            dismiss()
+        case .twoFactorRequired:
+            needsCode = true
+        case nil:
+            break
         }
     }
 }

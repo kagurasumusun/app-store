@@ -6,241 +6,159 @@ import UIKit
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var showAcknowledgements = false
-    @State private var showRegionPicker = false
-    @State private var showRemoveActive = false
+    @State private var showDeleteAll = false
+
+    private var installService: InstallService { model.installService }
 
     var body: some View {
         NavigationStack {
             Form {
-                accountSection
-                storeSection
-                installationSection
-                librarySection
-                wishlistSection
+                installSection
                 deviceSection
+                storageSection
                 aboutSection
-                legalSection
             }
+            .scrollContentBackground(.hidden)
+            .background(AppBackground())
             .navigationTitle("Settings")
             .sheet(isPresented: $showAcknowledgements) {
                 AcknowledgementsView()
             }
-            .sheet(isPresented: $showRegionPicker) {
-                RegionPickerView()
-            }
-            .confirmationDialog("Remove the active account?",
-                                isPresented: $showRemoveActive,
+            .confirmationDialog("Delete all downloaded packages?",
+                                isPresented: $showDeleteAll,
                                 titleVisibility: .visible) {
-                Button("Remove", role: .destructive) {
-                    if let account = model.activeAccount {
-                        model.remove(account)
-                    }
+                Button("Delete All", role: .destructive) {
+                    model.deleteAllLibraryItems()
                 }
             } message: {
-                Text("Its Keychain entry will be deleted. Downloaded packages remain.")
+                Text("Every IPA in Downloads will be removed from this device. Installed apps are not affected.")
+            }
+            .onAppear {
+                installService.prepareCertificate()
+                model.refreshLibrary()
             }
         }
     }
 
-    private var accountSection: some View {
-        Section("Account") {
-            if let account = model.activeAccount {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(account.name.isEmpty ? account.email : account.name)
-                        .font(.body.weight(.medium))
-                    Text("\(account.email) · \(account.region)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 2)
-                Button("Manage Accounts (\(model.accounts.count))") { model.showAccounts = true }
-                Button("Remove This Account", role: .destructive) {
-                    showRemoveActive = true
-                }
-            } else {
-                Button("Sign In…") { model.showLogin = true }
-            }
-        }
-    }
+    // MARK: On-device installation
 
-    private var storeSection: some View {
-        Section {
-            Picker("Preferred Platform", selection: Binding(
-                get: { model.platform },
-                set: { model.setPlatform($0) })) {
-                ForEach(StorePlatform.allCases) { platform in
-                    Label(platform.title, systemImage: platform.symbol)
-                        .tag(platform)
-                }
-            }
-            Button {
-                showRegionPicker = true
-            } label: {
-                HStack {
-                    Text("Storefront")
-                    Spacer()
-                    Text("\(model.currentStorefront?.flag ?? "") \(model.regionName(model.region))")
-                        .foregroundStyle(.secondary)
-                }
-            }
-        } header: {
-            Text("Store")
-        } footer: {
-            Text("The storefront controls search results, ratings, reviews and which package Apple returns. The platform picker chooses the build family. Signing in again with a different region changes the storefront attached to that account.")
-        }
-    }
-
-    private var installationSection: some View {
+    private var installSection: some View {
         Section {
             HStack {
                 Text("Root certificate")
                 Spacer()
-                if model.installService.certificateFingerprint.isEmpty {
+                if installService.hasCertificate {
+                    CopyableIdentifier(value: installService.certificateFingerprintShort)
+                } else {
                     Text("Not created")
                         .foregroundStyle(.tertiary)
-                } else {
-                    CopyableIdentifier(value: model.installService.certificateFingerprintShort)
                 }
             }
             Button {
-                model.presentInstallSheet()
+                if !installService.openCertificateProfile(),
+                   let error = installService.certificateError {
+                    model.presentMessage("Certificate", error)
+                }
             } label: {
-                Label("Open install server", systemImage: "square.and.arrow.down.on.square")
+                Label("Install Root Certificate", systemImage: "checkmark.shield")
             }
-            NavigationLink {
-                CertificateGuideView()
+            Button {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
             } label: {
-                Label("Certificate trust guide", systemImage: "checkmark.shield")
+                Label("Open Settings", systemImage: "gearshape")
             }
-        } header: {
-            Text("Installation")
-        } footer: {
-            Text("IPAShelf installs packages on this device with the same on-demand flow used by enterprise apps. A locally generated root certificate must be trusted once.")
-        }
-        .onAppear {
-            if model.installService.certificateFingerprint.isEmpty {
-                model.installService.prepareCertificate()
-            }
-        }
-    }
-
-    private var librarySection: some View {
-        Section("Library") {
-            InfoRow(label: "Packages", value: "\(model.library.count)")
-            InfoRow(label: "Total size",
-                    value: ByteCountFormatter.string(fromByteCount: model.libraryTotalSize,
-                                                     countStyle: .file))
-            InfoRow(label: "Location", value: "On My iPhone › IpaStore › IPAs")
-            Button("Refresh Library") { model.refreshLibrary() }
-        }
-    }
-
-    private var wishlistSection: some View {
-        Section {
-            if model.wishlist.isEmpty {
-                Text("Apps you star are collected here and on the search screen.")
+            certificateSteps
+            if let error = installService.certificateError {
+                Text(error)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(model.wishlist) { entry in
-                    HStack {
-                        AppArtwork(url: entry.url, size: 34, cornerRadius: 8)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(entry.name)
-                                .font(.subheadline)
-                            Text(entry.bundleID)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button {
-                            model.removeWishlist(appID: entry.appID)
-                        } label: {
-                            Image(systemName: "star.slash")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+                    .foregroundStyle(.red)
             }
         } header: {
-            Text("Wishlist")
+            Text("On-Device Installation")
+        } footer: {
+            Text("Installing a downloaded package on this device needs the iOS OTA flow: a manifest served over HTTPS from a certificate the device trusts. IPAShelf generates that certificate locally and serves everything on this device only — the private keys never leave the Keychain.")
         }
     }
 
-    private var deviceSection: some View {
-        Section("Device") {
-            InfoRow(label: "Protocol ID", value: model.deviceIdentifier)
-            Button {
-                UIPasteboard.general.string = model.deviceIdentifier
-                model.presentMessage("Copied", "The protocol identity is on the clipboard.")
-            } label: {
-                Label("Copy Protocol ID", systemImage: "doc.on.doc")
-            }
+    private var certificateSteps: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("One-time setup")
+                .font(.subheadline.weight(.semibold))
+            step(1, "Tap “Install Root Certificate” and allow the profile download in Safari.")
+            step(2, "Install it under Settings › General › VPN & Device Management.")
+            step(3, "Enable “IPAShelf Root CA” under Settings › General › About › Certificate Trust Settings.")
+            step(4, "Open Downloads and tap Install on any package.")
         }
+        .padding(.vertical, 4)
     }
 
-    private var aboutSection: some View {
-        Section("About") {
-            InfoRow(label: "Version", value: model.appVersion)
-            InfoRow(label: "Engine", value: "IPAShelf Core (C++20)")
-            Button("Acknowledgements") { showAcknowledgements = true }
-            Link("Apple Media Services Terms",
-                 destination: URL(string: "https://www.apple.com/legal/internet-services/itunes/")!)
-        }
-    }
-
-    private var legalSection: some View {
-        Section {
-            Text("IPAShelf talks to the same private endpoints as Apple Configurator. It is not affiliated with Apple. Use it only with accounts and purchases you own.")
-                .font(.footnote)
+    private func step(_ number: Int, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text("\(number)")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 18, height: 18)
+                .background(Circle().fill(Color.indigo))
+            Text(text)
+                .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
-}
 
-struct CertificateGuideView: View {
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Label("Why a certificate is needed", systemImage: "lock.shield")
-                    .font(.headline)
-                Text("iOS only installs a package from an HTTPS manifest signed by a certificate the device trusts. IPAShelf creates a local root certificate the first time you open the install server. The private keys never leave this device.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+    // MARK: Device
 
-                Divider()
-
-                Label("One-time setup", systemImage: "1.circle")
-                    .font(.headline)
-                Text("Open the install server, tap “Install the root certificate profile”, then install it from Settings › General › VPN & Device Management.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-
-                Label("Enable trust", systemImage: "2.circle")
-                    .font(.headline)
-                Text("Open Settings › General › About › Certificate Trust Settings and switch on “IPAShelf Root CA”. iOS asks for your passcode.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-
-                Label("Install", systemImage: "3.circle")
-                    .font(.headline)
-                Text("Return to IPAShelf, tap Install, and confirm the system prompt. The package is served from this device over the local network; the transfer status appears in the app.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-
-                Divider()
-
-                Label("Removing it", systemImage: "trash")
-                    .font(.headline)
-                Text("Delete the profile in Settings › General › VPN & Device Management. Packages that are already installed keep working.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+    private var deviceSection: some View {
+        Section {
+            HStack {
+                Text("Device ID (GUID)")
+                Spacer()
+                CopyableIdentifier(value: model.deviceIdentifier)
             }
-            .padding(20)
+        } header: {
+            Text("Device")
+        } footer: {
+            Text("A random identifier generated on first launch and kept in the Keychain. Apple sees it as the device that signs in and downloads, like a Mac running Configurator. It never changes on its own — changing it would orphan your signed-in accounts.")
         }
-        .navigationTitle("Certificate")
-        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    // MARK: Storage
+
+    private var storageSection: some View {
+        Section {
+            InfoRow(label: "Downloaded packages", value: "\(model.library.count)")
+            InfoRow(label: "Space used",
+                    value: ByteCountFormatter.string(fromByteCount: model.libraryTotalSize, countStyle: .file))
+            if !model.library.isEmpty {
+                Button(role: .destructive) {
+                    showDeleteAll = true
+                } label: {
+                    Label("Delete All Packages", systemImage: "trash")
+                }
+            }
+        } header: {
+            Text("Storage")
+        } footer: {
+            Text("Packages are stored in the app's Documents folder and are visible in the Files app under IPAShelf.")
+        }
+    }
+
+    // MARK: About
+
+    private var aboutSection: some View {
+        Section {
+            InfoRow(label: "Version", value: model.appVersion)
+            Button {
+                showAcknowledgements = true
+            } label: {
+                Label("Acknowledgements", systemImage: "doc.text")
+            }
+        } header: {
+            Text("About")
+        } footer: {
+            Text("IPAShelf downloads App Store packages with your own Apple ID, including older versions, and installs them on this device. Sign-in is protected by a complete in-app implementation of Apple's SAP signing protocol — no servers, no private frameworks.")
+        }
     }
 }
 

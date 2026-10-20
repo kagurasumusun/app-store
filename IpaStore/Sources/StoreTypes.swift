@@ -240,35 +240,6 @@ struct StoreApp: Identifiable, Hashable {
 // cannot race.
 extension StoreApp: @unchecked Sendable {}
 
-struct StoreReview: Identifiable, Hashable {
-    let reviewID: String
-    let author: String
-    let title: String
-    let body: String
-    let version: String
-    let updated: String
-    let rating: Int
-
-    var id: String {
-        reviewID.isEmpty ? "\(author)-\(updated)-\(title)" : reviewID
-    }
-
-    var dateLabel: String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let date = formatter.date(from: updated)
-            ?? ISO8601DateFormatter().date(from: updated)
-        guard let date else { return updated }
-        return date.formatted(date: .abbreviated, time: .omitted)
-    }
-}
-
-struct StoreReviewsPage: Hashable {
-    let page: Int
-    let hasMore: Bool
-    let reviews: [StoreReview]
-}
-
 struct StoreStorefront: Identifiable, Hashable {
     let code: String
     let name: String
@@ -299,6 +270,9 @@ struct StoreAccount: Identifiable, Hashable {
     let region: String
     let storefront: String
     let directoryServicesID: String
+    /// Whether the Keychain holds this account's password, enabling token
+    /// rotation without asking for it again.
+    let hasSavedPassword: Bool
 
     var id: String { email }
 
@@ -314,6 +288,7 @@ struct StoreAccount: Identifiable, Hashable {
         region = handle.region.uppercased()
         storefront = handle.storefront
         directoryServicesID = handle.directoryServicesID
+        hasSavedPassword = handle.hasSavedPassword
     }
 
     static func == (lhs: StoreAccount, rhs: StoreAccount) -> Bool {
@@ -563,59 +538,6 @@ struct LibraryItem: Identifiable, Hashable {
         self.downloadedAt = downloadedAt
         self.byteSize = byteSize
         self.fileURL = fileURL
-    }
-}
-
-struct LibraryGroup: Identifiable {
-    let key: String
-    let name: String
-    let bundleID: String
-    let items: [LibraryItem]
-
-    var id: String { key }
-    var latest: LibraryItem? { items.first }
-    var totalSize: Int64 { items.reduce(0) { $0 + $1.byteSize } }
-    var sizeLabel: String {
-        ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file)
-    }
-    var versionsLabel: String {
-        items.count == 1 ? "1 version" : "\(items.count) versions"
-    }
-
-    static func groups(from items: [LibraryItem]) -> [LibraryGroup] {
-        let grouped = Dictionary(grouping: items) { item in
-            item.bundleID.isEmpty ? item.name.lowercased() : item.bundleID.lowercased()
-        }
-        return grouped.map { key, values in
-            let sorted = values.sorted { $0.downloadedAt > $1.downloadedAt }
-            return LibraryGroup(key: key,
-                                name: sorted.first?.name ?? key,
-                                bundleID: sorted.first?.bundleID ?? "",
-                                items: sorted)
-        }
-        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-}
-
-struct WishlistEntry: Codable, Identifiable, Hashable {
-    let appID: Int64
-    let name: String
-    let bundleID: String
-    let artworkURL: String?
-    let addedAt: Date
-
-    var id: Int64 { appID }
-
-    var url: URL? {
-        artworkURL.flatMap(URL.init(string:))
-    }
-
-    init(app: StoreApp) {
-        appID = app.appID
-        name = app.name
-        bundleID = app.bundleID
-        artworkURL = app.artworkURL?.absoluteString
-        addedAt = Date()
     }
 }
 

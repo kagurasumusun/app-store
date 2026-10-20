@@ -4,12 +4,14 @@ import Foundation
 import Observation
 import UIKit
 
-/// Drives the on-demand install server for one downloaded IPA.
+/// Drives on-device OTA installation and the root-certificate profile
+/// server.
 ///
-/// The server itself lives in `IPInstallServer` (Objective-C++): it creates a
-/// local root CA, serves the OTA manifest and the payload over TLS, and serves
-/// the root certificate over plain HTTP so the user can trust it before the
-/// first install.
+/// The servers themselves live in Objective-C++ (`IPInstallServer` and
+/// `IPInstallCertificateServer`): a locally generated root CA signs a leaf
+/// for `localhost`, the manifest and IPA are served over TLS on loopback,
+/// and the certificate profile is served over plain HTTP so it can be
+/// fetched before the CA is trusted.
 @MainActor
 @Observable
 final class InstallService {
@@ -17,13 +19,14 @@ final class InstallService {
     var message: String = ""
     var installURL: URL?
     var pageURL: URL?
-    var certificateURL: URL?
     var profileURL: URL?
     var certificateFingerprint: String = ""
+    var certificateError: String?
     var isPresented = false
     var item: LibraryItem?
 
     @ObservationIgnored private var server: IPInstallServer?
+    @ObservationIgnored private var certificateServer: IPInstallCertificateServer?
     @ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     var certificateFingerprintShort: String {
@@ -31,11 +34,15 @@ final class InstallService {
         return String(certificateFingerprint.prefix(23)) + "…"
     }
 
+    var hasCertificate: Bool { !certificateFingerprint.isEmpty }
+
+    // MARK: Installation
+
     func start(item: LibraryItem) {
         stop()
         self.item = item
         phase = .preparing
-        message = "Creating the local certificate…"
+        message = "Preparing the local install server…"
 
         let server = makeServer(for: item)
         self.server = server
@@ -51,7 +58,6 @@ final class InstallService {
         }
         installURL = server.installURL.flatMap(URL.init(string:))
         pageURL = server.pageURL.flatMap(URL.init(string:))
-        certificateURL = server.certificateURL.flatMap(URL.init(string:))
         profileURL = server.profileURL.flatMap(URL.init(string:))
         certificateFingerprint = server.certificate?.sha256Fingerprint ?? ""
         phase = .ready
@@ -91,6 +97,79 @@ final class InstallService {
         }
     }
 
+    /// Opens the `itms-services` link so iOS fetches the manifest and asks
+    /// the user to confirm the installation.
+    func openInstallURL() {
+        guard let installURL else { return }
+        UIApplication.shared.open(installURL)
+    }
+
+    func stop() {
+        endBackgroundAssertion()
+        server?.stop()
+        server = nil
+        if case .failed = phase { return }
+        if phase != .idle {
+            phase = .stopped
+        }
+        installURL = nil
+        pageURL = nil
+        profileURL = nil
+    }
+
+    // MARK: Root certificate
+
+    /// Loads (or creates) the root certificate so Settings can show the
+    /// fingerprint before the first install.
+    func prepareCertificate() {
+        let result = IPInstallServer.prepareCertificate()
+        if let certificate = result.certificate {
+            certificateFingerprint = certificate.sha256Fingerprint
+            certificateError = nil
+            return
+        }
+        if let error = result.error {
+            certificateError = StoreError(error).message
+        }
+    }
+
+    /// Starts the certificate-only server and opens the profile in Safari,
+    /// which starts the iOS profile download flow. Used from Settings and
+    /// from the install sheet when installation is blocked.
+    @discardableResult
+    func openCertificateProfile() -> Bool {
+        // When an install server is already running its own profile
+        // endpoint is the right one; a second server would be redundant.
+        if let profileURL {
+            UIApplication.shared.open(profileURL)
+            return true
+        }
+        let server = certificateServer ?? IPInstallCertificateServer()
+        certificateServer = server
+        guard server.start() else {
+            certificateError = server.startupError.map { StoreError($0).message }
+                ?? "The certificate server did not start."
+            return false
+        }
+        if let certificate = server.certificate {
+            certificateFingerprint = certificate.sha256Fingerprint
+        }
+        certificateError = nil
+        guard let url = server.profileURL.flatMap(URL.init(string:)) else {
+            certificateError = "The certificate server did not publish a URL."
+            return false
+        }
+        UIApplication.shared.open(url)
+        return true
+    }
+
+    func stopCertificateServer() {
+        certificateServer?.stop()
+        certificateServer = nil
+    }
+
+    // MARK: Background assertion
+
     /// Keeps the process (and therefore the listener) alive briefly after the
     /// user leaves the app to accept the install prompt.
     func beginBackgroundAssertion() {
@@ -105,31 +184,5 @@ final class InstallService {
         guard backgroundTask != .invalid else { return }
         UIApplication.shared.endBackgroundTask(backgroundTask)
         backgroundTask = .invalid
-    }
-
-    func stop() {
-        endBackgroundAssertion()
-        server?.stop()
-        server = nil
-        if case .failed = phase { return }
-        if phase != .idle {
-            phase = .stopped
-        }
-        installURL = nil
-        pageURL = nil
-        certificateURL = nil
-    }
-
-    /// Loads (or creates) the root certificate so Settings can show the
-    /// fingerprint and instructions before the first install.
-    func prepareCertificate() {
-        let result = IPInstallServer.prepareCertificate()
-        if let certificate = result.certificate {
-            certificateFingerprint = certificate.sha256Fingerprint
-            return
-        }
-        if let error = result.error {
-            phase = .failed(StoreError(error).message)
-        }
     }
 }

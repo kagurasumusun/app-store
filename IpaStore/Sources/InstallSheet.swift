@@ -3,8 +3,9 @@
 import SwiftUI
 import UIKit
 
-/// Installation progress, certificate trust instructions and diagnostics for
-/// the local OTA server.
+/// One-screen installation status: the local server serves the manifest and
+/// payload on loopback; iOS does the actual installing after the user
+/// confirms its own prompt.
 struct InstallSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -13,15 +14,63 @@ struct InstallSheet: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                statusSection
-                if service.installURL != nil {
-                    installSection
-                } else {
-                    packageSection
+            ZStack {
+                AppBackground()
+                VStack(spacing: 24) {
+                    Spacer()
+                    Image(systemName: phaseSymbol)
+                        .font(.system(size: 56, weight: .light))
+                        .foregroundStyle(phaseColor)
+                        .contentTransition(.symbolEffect(.replace))
+                    VStack(spacing: 8) {
+                        if let item = service.item {
+                            Text(item.name)
+                                .font(.title3.weight(.bold))
+                                .multilineTextAlignment(.center)
+                            Text("Version \(item.displayVersion) · \(item.sizeLabel)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(statusText)
+                            .font(.headline)
+                            .multilineTextAlignment(.center)
+                        if case .sending(let progress) = service.phase {
+                            ProgressView(value: progress)
+                                .frame(maxWidth: 260)
+                        } else if service.phase == .preparing {
+                            ProgressView()
+                        }
+                        if case .failed(let message) = service.phase {
+                            Text(message)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .multilineTextAlignment(.center)
+                        }
+                    }
+
+                    if service.phase == .ready || isSending {
+                        Button {
+                            service.openInstallURL()
+                        } label: {
+                            Label(isSending ? "Open the Install Prompt Again" : "Install",
+                                  systemImage: "arrow.down.app")
+                                .frame(minWidth: 200)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                    }
+
+                    Spacer()
+
+                    certificateHelp
+
+                    Text("Keep IPAShelf open until iOS finishes downloading the package. The app icon appears on the Home Screen while it installs.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
                 }
-                certificateSection
-                diagnosticsSection
+                .padding(.bottom, 20)
             }
             .navigationTitle("Install")
             .navigationBarTitleDisplayMode(.inline)
@@ -32,192 +81,88 @@ struct InstallSheet: View {
                         dismiss()
                     }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    if service.phase.isBusy {
-                        Button("Stop", role: .destructive) { service.stop() }
-                    }
+            }
+            .task(id: service.phase == .ready) {
+                // Kick off the system install prompt automatically when the
+                // server is ready; the button above re-opens it on demand.
+                if service.phase == .ready {
+                    try? await Task.sleep(for: .milliseconds(350))
+                    service.openInstallURL()
                 }
             }
         }
-        .presentationDetents([.medium, .large])
-        .interactiveDismissDisabled(service.phase.isBusy)
+        .presentationDetents([.large])
         .onDisappear { service.stop() }
     }
 
-    private var statusSection: some View {
-        Section {
-            if let item = service.item {
-                HStack(spacing: 12) {
-                    AppArtwork(url: item.artworkURL, size: 48, cornerRadius: 12)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(item.name)
-                            .font(.headline)
-                        Text("Version \(item.displayVersion) · \(item.sizeLabel)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-
-            HStack {
-                Label(service.phase.title, systemImage: phaseSymbol)
-                    .foregroundStyle(phaseColor)
-                Spacer()
-                if case .sending(let progress) = service.phase {
-                    ProgressView(value: progress)
-                        .frame(width: 96)
-                } else if case .preparing = service.phase {
-                    ProgressView().controlSize(.small)
-                }
-            }
-
-            if !service.message.isEmpty {
-                Text(service.message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if case .failed(let message) = service.phase {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-        } header: {
-            Text("Status")
-        } footer: {
-            Text("Keep IPAShelf open while iOS downloads and installs the package. iOS shows its own confirmation when the manifest is accepted.")
-        }
+    private var isSending: Bool {
+        if case .sending = service.phase { return true }
+        return false
     }
 
-    @ViewBuilder
-    private var installSection: some View {
-        Section {
-            Button {
-                if let url = service.installURL {
-                    UIApplication.shared.open(url)
-                }
-            } label: {
-                Label("Install on this device", systemImage: "square.and.arrow.down.on.square")
-                    .font(.headline)
-            }
-            if let pageURL = service.pageURL {
-                Button {
-                    UIApplication.shared.open(pageURL)
-                } label: {
-                    Label("Open the install page in Safari", systemImage: "safari")
-                }
-            }
-            if let profileURL = service.profileURL {
-                Button {
-                    UIApplication.shared.open(profileURL)
-                } label: {
-                    Label("Install the root certificate profile", systemImage: "checkmark.shield")
-                }
-            }
-        } header: {
-            Text("Install")
-        } footer: {
-            Text("If iOS refuses the manifest, open the certificate page, install the root certificate, then enable it under Settings › General › About › Certificate Trust Settings.")
-        }
-    }
-
-    private var packageSection: some View {
-        Section {
-            Text("No package is queued yet.")
-                .font(.subheadline)
-            Button {
-                service.isPresented = false
-                model.selectedTab = .library
-            } label: {
-                Label("Choose a package in Library", systemImage: "square.stack.3d.up.fill")
-            }
-        } header: {
-            Text("Package")
-        } footer: {
-            Text("Downloads appear in the Library. Open one, tap Install, and the local server starts for that exact build.")
-        }
-    }
-
-    private var certificateSection: some View {
-        Section {
-            HStack {
-                Text("SHA-256")
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if service.certificateFingerprint.isEmpty {
-                    Text("Not created")
-                        .foregroundStyle(.tertiary)
-                } else {
-                    CopyableIdentifier(value: service.certificateFingerprint)
-                }
-            }
-            .font(.subheadline)
-
-            Button {
-                service.prepareCertificate()
-            } label: {
-                Label("Create or refresh certificate", systemImage: "checkmark.shield")
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("How to trust the root certificate")
-                    .font(.subheadline.weight(.semibold))
-                Text("1. Tap “Install the root certificate profile” (or open the install page in Safari and tap the certificate link).")
-                Text("2. Allow the profile download, then install it from Settings › General › VPN & Device Management.")
-                Text("3. Open Settings › General › About › Certificate Trust Settings and switch on “IPAShelf Root CA”.")
-                Text("4. Return here and tap Install.")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-            if let profileURL = service.profileURL {
-                ShareLink(item: profileURL) {
-                    Label("Share the root certificate profile", systemImage: "square.and.arrow.up")
-                }
-            }
-            if let certificateURL = service.certificateURL {
-                ShareLink(item: certificateURL) {
-                    Label("Share the raw certificate file", systemImage: "doc.on.doc")
-                }
-            }
-        } header: {
-            Text("Certificate")
-        } footer: {
-            Text("The root certificate and both private keys are generated on this device and stored in the Keychain. Nothing is uploaded. Delete the profile in Settings when you no longer need it.")
-        }
-    }
-
-    private var diagnosticsSection: some View {
-        Section("Diagnostics") {
-            if let installURL = service.installURL {
-                InfoRow(label: "Install", value: installURL.absoluteString)
-                    .font(.caption2)
-            }
-            if let pageURL = service.pageURL {
-                InfoRow(label: "Page", value: pageURL.absoluteString)
-                    .font(.caption2)
-            }
-            InfoRow(label: "Device ID", value: model.deviceIdentifier)
+    private var statusText: String {
+        switch service.phase {
+        case .preparing:
+            return "Preparing…"
+        case .ready:
+            return "Ready to Install"
+        case .sending(let progress) where progress >= 1:
+            return "Sent — iOS is installing"
+        case .sending:
+            return "Sending to iOS…"
+        case .failed:
+            return "Installation Failed"
+        case .idle, .stopped:
+            return "Not Running"
         }
     }
 
     private var phaseSymbol: String {
         switch service.phase {
-        case .idle: return "power"
         case .preparing: return "gearshape.2"
-        case .ready: return "checkmark.seal"
-        case .sending: return "arrow.up.circle"
-        case .failed: return "exclamationmark.triangle"
-        case .stopped: return "stop.circle"
+        case .ready: return "app.gift"
+        case .sending(let progress) where progress >= 1: return "app.badge.checkmark"
+        case .sending: return "paperplane.fill"
+        case .failed: return "exclamationmark.triangle.fill"
+        case .idle, .stopped: return "app.dashed"
         }
     }
 
     private var phaseColor: Color {
         switch service.phase {
         case .failed: return .red
-        case .stopped, .idle: return .secondary
+        case .idle, .stopped: return .secondary
+        case .sending(let progress) where progress >= 1: return .green
         default: return .indigo
         }
+    }
+
+    private var certificateHelp: some View {
+        VStack(spacing: 10) {
+            Text("Nothing happens when you tap Install?")
+                .font(.subheadline.weight(.semibold))
+            Text("The root certificate has to be installed and trusted once: download the profile, install it under Settings › General › VPN & Device Management, then enable “IPAShelf Root CA” under Settings › General › About › Certificate Trust Settings.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button {
+                if !service.openCertificateProfile(),
+                   let error = service.certificateError {
+                    model.presentMessage("Certificate", error)
+                }
+            } label: {
+                Label("Install Root Certificate", systemImage: "checkmark.shield")
+            }
+            .buttonStyle(.bordered)
+            if service.hasCertificate {
+                CopyableIdentifier(value: service.certificateFingerprintShort)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground).opacity(0.75)))
+        .padding(.horizontal, 20)
     }
 }

@@ -12,6 +12,12 @@ struct IpaStoreApp: App {
             RootView()
                 .environment(model)
                 .tint(.indigo)
+                .onOpenURL { url in
+                    // "Open in IPAShelf" from Files / share sheets.
+                    if url.pathExtension.lowercased() == "ipa" {
+                        model.importIPA(from: url)
+                    }
+                }
                 .task {
                     // Reuse the persisted root CA so the fingerprint shown in
                     // Settings matches the one already trusted on the device.

@@ -267,3 +267,97 @@ struct CopyableIdentifier: View {
         .buttonStyle(.plain)
     }
 }
+
+/// One catalog row, shared by Search and Purchased.
+struct AppRow: View {
+    let app: StoreApp
+
+    var body: some View {
+        HStack(spacing: 14) {
+            AppArtwork(url: app.artworkURL, size: 58)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(app.name)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(app.artistName.isEmpty ? app.seller : app.artistName)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    if app.ratingCount > 0 {
+                        StarRating(rating: app.averageRating, size: 9)
+                        Text(app.ratingLabel)
+                        Text("·")
+                    }
+                    Text(app.primaryGenre)
+                    if app.byteSize > 0 {
+                        Text("·")
+                        Text(app.sizeLabel)
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Text(app.priceLabel)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(app.isFree ? Color.indigo : Color.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(Color(.tertiarySystemFill)))
+        }
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+    }
+}
+
+/// Storefront chooser used by the search toolbar.
+struct RegionPickerView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    private var filtered: [StoreStorefront] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return model.storefronts }
+        return model.storefronts.filter {
+            $0.name.localizedCaseInsensitiveContains(needle)
+                || $0.code.localizedCaseInsensitiveContains(needle)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List(filtered) { storefront in
+                Button {
+                    model.setRegion(storefront.code)
+                    dismiss()
+                } label: {
+                    HStack {
+                        Text(storefront.flag)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(storefront.name)
+                            Text("\(storefront.code) · \(storefront.currency)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if storefront.code == model.region {
+                            Image(systemName: "checkmark").foregroundStyle(.indigo)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+            .navigationTitle("Storefront")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $query, prompt: "Country or region")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+}
