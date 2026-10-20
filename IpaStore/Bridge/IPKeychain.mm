@@ -86,7 +86,7 @@ static NSString *const kIPKeychainService = @"com.example.ipastore";
 
 @interface IPAccountStore ()
 - (void)reload;
-- (void)persist;
+- (BOOL)persist;
 @end
 
 @implementation IPAccountStore {

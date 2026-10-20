@@ -879,20 +879,34 @@ struct ConnectionState {
 }
 
 - (BOOL)startTLSListenerWithError:(NSError **_Nullable)error {
+  // Network.framework hands TLS options to a configure block; the older
+  // nw_tls_create_options() convenience is not part of the iOS 27 headers.
+  SecIdentityRef identity = _identity;
   nw_parameters_t parameters = nw_parameters_create_secure_tcp(
-      nw_tls_create_options(), NW_PARAMETERS_DEFAULT_CONFIGURATION);
+      ^(nw_protocol_options_t tlsOptions) {
+        sec_protocol_options_t tls =
+            nw_tls_copy_sec_protocol_options(tlsOptions);
+        if (tls == NULL) {
+          return;
+        }
+        sec_identity_t secIdentity = sec_identity_create(identity);
+        if (secIdentity != NULL) {
+          sec_protocol_options_set_local_identity(tls, secIdentity);
+          CFRelease(secIdentity);
+        }
+        sec_protocol_options_set_min_tls_protocol_version(
+            tls, tls_protocol_version_TLSv12);
+        sec_protocol_options_set_max_tls_protocol_version(
+            tls, tls_protocol_version_TLSv13);
+        CFRelease(tls);
+      },
+      NW_PARAMETERS_DEFAULT_CONFIGURATION);
   if (parameters == NULL) {
     if (error != NULL) {
       *error = IPInstallError(IPStoreErrorInternal, @"Could not create parameters.");
     }
     return NO;
   }
-  sec_protocol_options_t tls = nw_tls_copy_sec_protocol_options(parameters);
-  sec_protocol_options_set_local_identity(tls, sec_identity_create(_identity));
-  sec_protocol_options_set_min_tls_protocol_version(
-      tls, tls_protocol_version_TLSv12);
-  sec_protocol_options_set_max_tls_protocol_version(
-      tls, tls_protocol_version_TLSv13);
 
   nw_endpoint_t endpoint =
       nw_endpoint_create_host("0.0.0.0", "0");
