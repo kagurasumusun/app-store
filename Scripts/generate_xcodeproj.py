@@ -65,9 +65,11 @@ def collect() -> list[FileRef]:
                          "sourcecode.c.h", "ipa", None))
 
     for path in sorted((ROOT / "Core" / "include" / "ipashelf").glob("*.hpp")):
-        files.append(FileRef(path, "sourcecode.c.h", "include", None))
+        files.append(FileRef(path, "sourcecode.c.h", "ipashelf", None))
+    # The sources live in Core/src, so they need their own group: a file
+    # reference's path is resolved relative to its group.
     for path in sorted((ROOT / "Core" / "src").glob("*.cpp")):
-        files.append(FileRef(path, "sourcecode.cpp.cpp", "core", "sources"))
+        files.append(FileRef(path, "sourcecode.cpp.cpp", "src", "sources"))
 
     for path in sorted((ROOT / "ThirdParty" / "miniz").glob("*.c")):
         files.append(FileRef(path, "sourcecode.c.c", "miniz", "sources"))
@@ -225,6 +227,7 @@ def main() -> None:
         "resources": ident("group:resources"),
         "config": ident("group:config"),
         "core": ident("group:core"),
+        "src": ident("group:src"),
         "include": ident("group:include"),
         "ipashelf": ident("group:ipashelf"),
         "thirdparty": ident("group:thirdparty"),
@@ -260,12 +263,15 @@ def main() -> None:
     children["sources"] = sorted(children["sources"])
     children["bridge"] = sorted(children["bridge"])
     children["ipashelf"] = sorted(children["ipashelf"])
-    children["core"] = sorted(children["core"])
+    children["src"] = sorted(children["src"])
     children["miniz"] = sorted(children["miniz"])
     children["resources"] = sorted(children["resources"])
     children["config"] = sorted(children["config"])
     children["include"] = [f"{groups['ipashelf']} /* ipashelf */"]
-    children["core"] = [f"{groups['include']} /* include */"] + children["core"]
+    children["core"] = [
+        f"{groups['include']} /* include */",
+        f"{groups['src']} /* src */",
+    ]
     children["miniz"] = sorted(children["miniz"])
     children["thirdparty"] = [f"{groups['miniz']} /* miniz */"]
     children["ipa"] = [
@@ -292,6 +298,7 @@ def main() -> None:
     group_text += group_block(groups["resources"], "Resources", "Resources", children["resources"], "Resources")
     group_text += group_block(groups["config"], "Config", "Config", children["config"], "Config")
     group_text += group_block(groups["core"], "Core", "Core", children["core"], "Core")
+    group_text += group_block(groups["src"], "src", "src", children["src"], "src")
     group_text += group_block(groups["include"], "include", "include", children["include"], "include")
     group_text += group_block(groups["ipashelf"], "ipashelf", "ipashelf", children["ipashelf"], "ipashelf")
     group_text += group_block(groups["thirdparty"], "ThirdParty", "ThirdParty", children["thirdparty"], "ThirdParty")

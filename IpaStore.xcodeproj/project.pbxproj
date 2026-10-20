@@ -227,6 +227,15 @@
 			isa = PBXGroup;
 			children = (
 				49D752A6F5BF00845D1D61E3 /* include */,
+				1129B6A53940C88B539F2B2B /* src */,
+			);
+			name = Core;
+			path = Core;
+			sourceTree = "<group>";
+		};
+		1129B6A53940C88B539F2B2B /* src */ = {
+			isa = PBXGroup;
+			children = (
 				0EED688DB846DA8813791DD4 /* bag.cpp */,
 				1543997BE659B932F6FC9189 /* crypto.cpp */,
 				1A2F93F6C38BB251698FF1B3 /* sap.cpp */,
@@ -241,8 +250,8 @@
 				ED4D4D66CA4ECAAFE555128E /* plist.cpp */,
 				FC2793BC358CF238CBD55198 /* base.cpp */,
 			);
-			name = Core;
-			path = Core;
+			name = src;
+			path = src;
 			sourceTree = "<group>";
 		};
 		49D752A6F5BF00845D1D61E3 /* include */ = {
@@ -257,6 +266,19 @@
 		B57276EF56FEA445E0E93D80 /* ipashelf */ = {
 			isa = PBXGroup;
 			children = (
+				1C98EDE3F3A5CC19C918F2F1 /* ipa.hpp */,
+				25D38BDBF249B8AF0BDB5BF9 /* url.hpp */,
+				3679BD362732B44FE20E0ADA /* sap.hpp */,
+				3E07690D60ABE69175FF31D1 /* store_client.hpp */,
+				621A9950114D0C449E2242B6 /* base.hpp */,
+				7DA3A34375913ECA18151096 /* http.hpp */,
+				B4AF42DC4EB43B484907EEE1 /* x509.hpp */,
+				B8F811ABFE1D339863971DAE /* bag.hpp */,
+				CCC869A43DD3B9DB9D150C6D /* json.hpp */,
+				DEC9C98C0C7C2C666C48BCBC /* models.hpp */,
+				E9F6DB31BF8CBEDAB9BB8EAA /* plist.hpp */,
+				EBDFAF1461ACC8204CB4C9D6 /* ota.hpp */,
+				F09AB3438CC29B75CEA900B5 /* crypto.hpp */,
 			);
 			name = ipashelf;
 			path = ipashelf;

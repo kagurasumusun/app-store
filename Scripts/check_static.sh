@@ -68,6 +68,9 @@ else
   echo "  skipped: pip install pbxproj"
 fi
 
+echo "== Xcode project references"
+python3 Scripts/check_project_refs.py || status=1
+
 echo "== Brace balance (Swift / ObjC++ / C++)"
 python3 - <<'PY' || status=1
 import pathlib, sys
