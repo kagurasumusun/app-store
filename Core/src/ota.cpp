@@ -678,6 +678,20 @@ bool send_all(int fd, const char* data, std::size_t size) {
 
 Status serve_http_connection(int fd, const OtaRouter& router,
                              const CancellationToken& token) {
+  // Peers include speculative browser preconnects that never send a request
+  // and clients that stall mid-transfer. Without timeouts, one such socket
+  // parks a serving slot forever and the loopback server looks unreachable —
+  // "could not connect to localhost" — even though it is listening. The
+  // timeouts are best-effort; failure to set them only loses that hardening.
+  timeval receive_timeout{};
+  receive_timeout.tv_sec = 10;
+  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout,
+               sizeof(receive_timeout));
+  timeval send_timeout{};
+  send_timeout.tv_sec = 30;
+  ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &send_timeout,
+               sizeof(send_timeout));
+
   char buffer[16384];
   HttpRequestStream stream;
   std::optional<HttpServerRequest> request;

@@ -2425,11 +2425,15 @@ std::string read_socket_until_close(int fd) {
 void test_http_server(const std::string& fixtures) {
   using namespace ipashelf;
   const std::string payload = fixtures + "/payload.bin";
+  const std::string profile =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n"
+      "<dict><key>PayloadContent</key><array/></dict>\n</plist>\n";
   OtaPackage package;
   package.bundle_id = "com.example.sample";
   package.display_version = "4.2.0";
   package.title = "Sample";
   package.payload_path = payload;
+  package.profile_data = profile;
   OtaRouter router("https://127.0.0.1", package);
 
   const int listener = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -2451,30 +2455,39 @@ void test_http_server(const std::string& fixtures) {
   expect(port > 0, "ephemeral port assigned");
 
   std::thread server([listener, &router]() {
-    const int client = ::accept(listener, nullptr, nullptr);
-    if (client < 0) return;
-    CancellationSource token;
-    const Status status = serve_http_connection(client, router, token.token());
-    (void)status;
-    ::close(client);
+    for (int served = 0; served < 2; ++served) {
+      const int client = ::accept(listener, nullptr, nullptr);
+      if (client < 0) return;
+      CancellationSource token;
+      const Status status =
+          serve_http_connection(client, router, token.token());
+      (void)status;
+      ::close(client);
+    }
   });
 
-  const int client = ::socket(AF_INET, SOCK_STREAM, 0);
   sockaddr_in target{};
   target.sin_family = AF_INET;
   target.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   target.sin_port = htons(static_cast<std::uint16_t>(port));
-  expect(::connect(client, reinterpret_cast<sockaddr*>(&target),
-                   sizeof(target)) == 0,
-         "client connected");
+  const auto fetch = [&target](const std::string& request) {
+    const int client = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (::connect(client, reinterpret_cast<sockaddr*>(&target),
+                  sizeof(target)) != 0) {
+      ::close(client);
+      return std::string();
+    }
+    ::send(client, request.data(), request.size(), 0);
+    const std::string response = read_socket_until_close(client);
+    ::close(client);
+    return response;
+  };
+
   const std::string request =
       "GET /payload.ipa HTTP/1.1\r\nHost: 127.0.0.1\r\n"
       "Range: bytes=5-9\r\nConnection: close\r\n\r\n";
-  ::send(client, request.data(), request.size(), 0);
-  const std::string response = read_socket_until_close(client);
-  ::close(client);
-  server.join();
-  ::close(listener);
+  const std::string response = fetch(request);
+  expect(!response.empty(), "client connected");
 
   expect(response.rfind("HTTP/1.1 206 Partial Content", 0) == 0,
          "socket response status");
@@ -2488,6 +2501,27 @@ void test_http_server(const std::string& fixtures) {
     expect_eq(response.substr(body_start + 4), std::string("56789"),
               "socket response body");
   }
+
+  // The certificate profile used to come back mangled in the field, so the
+  // exact bytes and the profile MIME type are asserted over a real socket.
+  const std::string profile_response = fetch(
+      "GET /profile.mobileconfig HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+      "Connection: close\r\n\r\n");
+  expect(profile_response.rfind("HTTP/1.1 200 OK", 0) == 0,
+         "profile response status");
+  expect(profile_response.find(
+             "Content-Type: application/x-apple-aspen-config") !=
+             std::string::npos,
+         "profile content type");
+  const std::size_t profile_start = profile_response.find("\r\n\r\n");
+  expect(profile_start != std::string::npos, "profile response has a body");
+  if (profile_start != std::string::npos) {
+    expect_eq(profile_response.substr(profile_start + 4), profile,
+              "profile bytes served verbatim");
+  }
+
+  server.join();
+  ::close(listener);
 }
 #else
 void test_http_server(const std::string&) {}
