@@ -300,7 +300,7 @@ struct LoginFixture {
   std::unique_ptr<ipashelf::StoreClient> client;
   ipashelf::HardwareIdentity hardware;
 
-  LoginFixture() {
+  explicit LoginFixture(bool wrapped_bag = false) {
     hardware = ipashelf::HardwareIdentity::random();
     ipashelf::StoreConfiguration configuration;
     configuration.sleep = [](std::chrono::milliseconds) {};
@@ -309,7 +309,16 @@ struct LoginFixture {
     };
     client = std::make_unique<ipashelf::StoreClient>(transport,
                                                     std::move(configuration));
-    transport.enqueue_plist(make_bag());
+    if (wrapped_bag) {
+      // The production bag endpoint wraps the plist in a WebObjects
+      // envelope instead of returning a bare plist document.
+      transport.enqueue_response(
+          200, "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n"
+               "<Document>\n<Protocol>\n" +
+                   make_bag().dump_xml() + "</Protocol>\n</Document>\n");
+    } else {
+      transport.enqueue_plist(make_bag());
+    }
     transport.enqueue_plist(make_certificate());
     transport.enqueue_plist(make_setup_reply());
   }
@@ -378,6 +387,56 @@ void test_plist_xml() {
     expect(items->array_items()[0].integer_value() == 1, "plist integer");
     expect(items->array_items()[1].bool_value(), "plist boolean");
   }
+}
+
+void test_plist_envelope() {
+  using namespace ipashelf;
+  // Apple WebObjects endpoints (notably the URL bag) wrap the property list
+  // in an application envelope instead of returning a bare plist document.
+  const std::string inner =
+      "<plist version=\"1.0\">\n<dict>\n<key>authenticateAccount</key>\n"
+      "<string>https://buy.itunes.apple.com/authenticate</string>\n"
+      "</dict>\n</plist>\n";
+  const std::string wrapped =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n"
+      "<Document>\n<Protocol>\n" +
+      inner + "</Protocol>\n</Document>\n";
+  auto parsed = PlistValue::parse(bytes_of(wrapped));
+  expect(parsed.has_value(), "envelope-wrapped plist parses");
+  if (parsed) {
+    expect_eq(parsed.value().string_or("authenticateAccount"),
+              std::string("https://buy.itunes.apple.com/authenticate"),
+              "envelope plist value");
+  }
+
+  // Envelope around a bare dict.
+  const std::string wrapped_dict =
+      "<Document><dict><key>k</key><string>v</string></dict></Document>";
+  auto parsed_dict = PlistValue::parse(bytes_of(wrapped_dict));
+  expect(parsed_dict.has_value() && parsed_dict.value().is_dictionary(),
+         "envelope-wrapped dict parses");
+  if (parsed_dict) {
+    expect_eq(parsed_dict.value().string_or("k"), std::string("v"),
+              "envelope dict value");
+  }
+
+  // Bare key/value fragment without any container element.
+  const std::string fragment = "<key>a</key><string>1</string>";
+  auto parsed_fragment = PlistValue::parse(bytes_of(fragment));
+  expect(parsed_fragment.has_value() &&
+             parsed_fragment.value().is_dictionary(),
+         "key fragment parses as dict");
+  if (parsed_fragment) {
+    expect_eq(parsed_fragment.value().string_or("a"), std::string("1"),
+              "key fragment value");
+  }
+
+  // Non-plist payloads still fail cleanly.
+  expect(!PlistValue::parse(bytes_of("<html><body>oops</body></html>"))
+              .has_value(),
+         "HTML page is not a plist");
+  expect(!PlistValue::parse(bytes_of("plain text")).has_value(),
+         "plain text is not a plist");
 }
 
 void test_plist_binary(const std::string& fixture_path) {
@@ -674,6 +733,33 @@ void test_login_success() {
   expect_eq(fixture.sap->sign_calls, 1, "SAP signed once");
   expect(!fixture.sap->initialized_with.empty(), "SAP received hardware block");
   expect_eq(fixture.sap->teardown_calls, 1, "SAP session torn down");
+}
+
+void test_login_bag_envelope() {
+  using namespace ipashelf;
+  // Regression: the production bag endpoint wraps its plist in a
+  // <Document><Protocol> envelope; login must still succeed.
+  LoginFixture fixture(/*wrapped_bag=*/true);
+  ipashelf::HttpHeaders headers;
+  headers.set("X-Set-Apple-Store-Front", "143441-1,29");
+  fixture.transport.enqueue_plist(make_auth_reply(), 200, headers);
+
+  LoginRequest request;
+  request.email = "user@example.com";
+  request.password = "secret";
+  request.hardware = fixture.hardware;
+
+  CancellationSource source;
+  auto result = fixture.client->login(request, source.token());
+  expect(result.has_value(), "login with envelope-wrapped bag succeeds");
+  if (!result) {
+    std::cerr << "  login error: " << result.error().message << "\n";
+    return;
+  }
+  expect_eq(result.value().account.password_token,
+            std::string("password-token"), "envelope bag login token");
+  expect_eq(fixture.transport.requests.size(), std::size_t{4},
+            "envelope bag login request count");
 }
 
 void test_login_two_factor() {
@@ -2946,6 +3032,7 @@ int main(int argc, char** argv) {
   test_sap_software_backend();
   test_json();
   test_plist_xml();
+  test_plist_envelope();
   test_plist_binary(fixtures + "/sample.bplist");
   test_plist_binary_write(fixtures);
   test_account_json();
@@ -2953,6 +3040,7 @@ int main(int argc, char** argv) {
   test_url();
   test_bag();
   test_login_success();
+  test_login_bag_envelope();
   test_login_two_factor();
   test_login_bad_password();
   test_search_and_lookup();

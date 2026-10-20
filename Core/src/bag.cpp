@@ -89,40 +89,50 @@ Result<std::string> normalize_auth_endpoint(std::string_view endpoint) {
 Result<Bag> Bag::parse(const PlistValue& document) {
   Bag bag;
   bag.raw = document;
-  const PlistValue* root = &document;
-  if (const PlistValue* nested = document.find("urlBag");
-      nested != nullptr && nested->is_dictionary()) {
-    root = nested;
-  }
-
-  if (!root->is_dictionary()) {
+  // Bag keys live either at the plist root or inside the nested `urlBag`
+  // dictionary depending on the bag generation; look up each key at the
+  // root first and fall back to the nested dictionary.
+  const PlistValue* nested = document.find("urlBag");
+  if (nested != nullptr && !nested->is_dictionary()) nested = nullptr;
+  if (!document.is_dictionary() && nested == nullptr) {
     return make_error(ErrorCode::kParse, "Apple bag is not a dictionary");
   }
+  const auto lookup_string = [&](const char* key) -> std::optional<std::string> {
+    if (auto value = document.string_for(key)) return value;
+    if (nested != nullptr) return nested->string_for(key);
+    return std::nullopt;
+  };
+  const auto lookup_integer =
+      [&](const char* key) -> std::optional<std::int64_t> {
+    if (auto value = document.integer_for(key)) return value;
+    if (nested != nullptr) return nested->integer_for(key);
+    return std::nullopt;
+  };
 
-  if (auto value = root->string_for("authenticateAccount")) {
+  if (auto value = lookup_string("authenticateAccount")) {
     bag.auth_endpoint = *value;
   }
   // Despite the key name, current bags return the DownloadDispatch
   // ent/download URL here; the legacy volume store URL is rebuilt from the
   // account pod at download time.
-  if (auto value = root->string_for("volumeStoreDownloadProduct")) {
+  if (auto value = lookup_string("volumeStoreDownloadProduct")) {
     bag.ent_download_endpoint = *value;
   }
-  if (auto value = root->string_for("redownloadProduct")) {
+  if (auto value = lookup_string("redownloadProduct")) {
     bag.redownload_endpoint = *value;
   }
-  if (auto value = root->string_for("updateProduct")) {
+  if (auto value = lookup_string("updateProduct")) {
     bag.update_endpoint = *value;
   }
-  if (auto value = root->string_for("sign-sap-setup")) {
+  if (auto value = lookup_string("sign-sap-setup")) {
     bag.sap_setup_url = *value;
   }
-  if (auto value = root->string_for("sign-sap-setup-cert")) {
+  if (auto value = lookup_string("sign-sap-setup-cert")) {
     bag.sap_setup_cert_url = *value;
   }
-  if (auto value = root->integer_for("sign-sap-version")) {
+  if (auto value = lookup_integer("sign-sap-version")) {
     bag.sap_version = static_cast<int>(*value);
-  } else if (auto value = root->string_for("sign-sap-version")) {
+  } else if (auto value = lookup_string("sign-sap-version")) {
     char* end = nullptr;
     const long parsed = std::strtol(value->c_str(), &end, 10);
     if (end != nullptr && *end == '\0') {

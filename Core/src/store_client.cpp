@@ -710,7 +710,12 @@ Result<Bag> StoreClient::fetch_bag(const HardwareIdentity& hardware,
                  response.value().status};
   }
   auto document = PlistValue::parse(response.value().body);
-  if (!document) return document.error();
+  if (!document) {
+    Error error = document.error();
+    error.message =
+        "Apple URL bag was not a valid property list: " + error.message;
+    return error;
+  }
   return Bag::parse(document.value());
 }
 

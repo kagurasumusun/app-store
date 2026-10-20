@@ -193,11 +193,59 @@ class XmlParser {
  public:
   explicit XmlParser(std::string_view text) : text_(text) {}
 
+  // Locates a complete `<name...>...</name>` element anywhere in the input.
+  // Apple WebObjects endpoints (most importantly the URL bag) wrap their
+  // property lists in application envelopes shaped like
+  // `<Document><Protocol><plist>...</plist></Protocol></Document>` or return
+  // a bare `<dict>` inside such an envelope, so when the document does not
+  // start with a plist element the payload is located explicitly.
+  std::optional<std::string_view> find_element(std::string_view name) const {
+    const std::string open = "<" + std::string(name);
+    const std::string close = "</" + std::string(name) + ">";
+    std::size_t search = 0;
+    while (true) {
+      const std::size_t start = text_.find(open, search);
+      if (start == std::string_view::npos) return std::nullopt;
+      const std::size_t after = start + open.size();
+      if (after < text_.size()) {
+        const char boundary = text_[after];
+        if (boundary == '>' || boundary == '/' || boundary == ' ' ||
+            boundary == '\t' || boundary == '\n' || boundary == '\r') {
+          const std::size_t end = text_.rfind(close);
+          if (end == std::string_view::npos || end <= start) {
+            return std::nullopt;
+          }
+          return text_.substr(start, end + close.size() - start);
+        }
+      }
+      search = start + 1;
+    }
+  }
+
   Result<PlistValue> parse() {
     if (starts_with(text_, "\xEF\xBB\xBF")) text_.remove_prefix(3);
     skip_misc();
     if (position_ >= text_.size()) {
       return make_error(ErrorCode::kParse, "property list is empty");
+    }
+
+    if (peek_tag_name() != "plist") {
+      // Peel Apple WebObjects envelopes: prefer an embedded <plist>, then an
+      // embedded <dict>, then a bare <key> fragment treated as dict content.
+      if (auto embedded = find_element("plist")) {
+        text_ = *embedded;
+        position_ = 0;
+        skip_misc();
+      } else if (auto embedded = find_element("dict")) {
+        text_ = *embedded;
+        position_ = 0;
+        return parse_value(0);
+      } else if (text_.find("<key>") != std::string_view::npos) {
+        owned_ = "<dict>" + std::string(text_) + "</dict>";
+        text_ = owned_;
+        position_ = 0;
+        return parse_value(0);
+      }
     }
 
     if (peek_tag_name() == "plist") {
@@ -480,6 +528,8 @@ class XmlParser {
   }
 
   std::string_view text_;
+  // Backing storage when a bare <key> fragment is wrapped into a <dict>.
+  std::string owned_;
   std::size_t position_ = 0;
 };
 

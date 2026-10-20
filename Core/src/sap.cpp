@@ -73,13 +73,23 @@ Bytes sap_setup_envelope(const Bytes& payload) {
   return Bytes(xml.begin(), xml.end());
 }
 
-Result<Bytes> sap_plist_data(const Bytes& body, std::string_view key) {
+// `context` names the response for error reporting (setup certificate vs
+// setup exchange) so a failure can be localized to one handshake step.
+Result<Bytes> sap_plist_data(const Bytes& body, std::string_view key,
+                             const char* context) {
   auto plist = PlistValue::parse(body);
-  if (!plist) return plist.error();
+  if (!plist) {
+    Error error = plist.error();
+    error.message = std::string(context) +
+                    " response was not a valid property list: " +
+                    error.message;
+    return error;
+  }
   const PlistValue* value = plist.value().find(key);
   if (value == nullptr || !value->is_data() || value->data_value().empty()) {
-    return make_error(ErrorCode::kParse,
-                      "SAP plist did not contain " + std::string(key));
+    return make_error(ErrorCode::kParse, std::string(context) +
+                                             " did not contain " +
+                                             std::string(key));
   }
   return value->data_value();
 }
@@ -120,7 +130,8 @@ Result<std::unique_ptr<SapSession>> establish_sap_session(
   certificate_request.headers.set("User-Agent", std::string(user_agent));
   auto certificate_body = send_setup_request(transport, certificate_request, token);
   if (!certificate_body) return certificate_body.error();
-  auto certificate = sap_plist_data(certificate_body.value(), kCertificateKey);
+  auto certificate = sap_plist_data(certificate_body.value(), kCertificateKey,
+                                    "SAP setup certificate");
   if (!certificate) return certificate.error();
 
   auto context = backend->initialize(hardware_block.value());
@@ -156,7 +167,8 @@ Result<std::unique_ptr<SapSession>> establish_sap_session(
   auto setup_body = send_setup_request(transport, setup_request, token);
   if (!setup_body) return close_on_failure(setup_body.error());
 
-  auto reply = sap_plist_data(setup_body.value(), kSetupBufferKey);
+  auto reply = sap_plist_data(setup_body.value(), kSetupBufferKey,
+                              "SAP setup exchange");
   if (!reply) return close_on_failure(reply.error());
 
   auto second = backend->exchange(configuration.version,

@@ -219,6 +219,7 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$app_path/Info.plist"
           # The Swift and Objective-C++ objects must both be in the binary.
           nm -gU "$app_path/IpaStore" | grep -q 'IPInstallServer' && echo "Objective-C++ symbols linked"
+          nm -gU "$app_path/IpaStore" | grep -q 'create_platform_sap_backend' && echo "SAP signer linked into the app binary"
           lipo -info "$app_path/IpaStore"
 
       - name: Validate generated certificates with openssl
