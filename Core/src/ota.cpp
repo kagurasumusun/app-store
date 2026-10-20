@@ -578,7 +578,12 @@ HttpServerResponse OtaRouter::route(const HttpServerRequest& request) const {
       const std::size_t colon = host_header.find(':');
       const std::string actual =
           colon == std::string::npos ? host_header : host_header.substr(0, colon);
-      if (actual != expected) {
+      // Loopback is how the app itself probes the listener and how a user
+      // can check the server from the device; the manifest keeps pointing at
+      // the advertised address, so accepting it cannot redirect anything.
+      const bool loopback = actual == "127.0.0.1" || actual == "localhost" ||
+                            actual == "::1" || actual == "[::1]";
+      if (actual != expected && !loopback) {
         return error_response(421, "unexpected host");
       }
     }

@@ -4,7 +4,7 @@ IPAShelf のテストは 3 層に分かれています。
 
 | 層 | コマンド | 内容 |
 | --- | --- | --- |
-| コア | `bash Scripts/build_core.sh` | C++ の 360 チェック + 外部ツールによる検証 |
+| コア | `bash Scripts/build_core.sh` | C++ の 362 チェック + 外部ツールによる検証 |
 | 静的 | `bash Scripts/check_static.sh` | Swift 構文、Objective-C ブリッジ API、pbxproj、括弧 |
 | 手動 | `docs/testing.md` のチェックリスト | 実機でのサインイン・ダウンロード・インストール |
 
@@ -24,7 +24,7 @@ SANITIZE=1 bash Scripts/build_core.sh
 
 ---
 
-## 1. コアのテスト（360 チェック）
+## 1. コアのテスト（362 チェック）
 
 ### エンコードとデータ形式
 

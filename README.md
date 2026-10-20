@@ -96,7 +96,7 @@ open IpaStore.xcodeproj
 `build_core.sh` の期待される出力:
 
 ```
-PASS: 360/360 checks
+PASS: 362/362 checks
 python plistlib validation: ok
 python IPA validation: ok
 python OTA manifest validation: ok
@@ -112,7 +112,7 @@ openssl PEM validation: ok
 
 | 対象 | 検証方法 | 結果 |
 | --- | --- | --- |
-| C++ コア | `g++ 12 -std=c++20 -Wall -Wextra -Werror` + ASan/UBSan | ✅ 360 チェック |
+| C++ コア | `g++ 12 -std=c++20 -Wall -Wextra -Werror` + ASan/UBSan | ✅ 362 チェック |
 | plist / IPA | Python `plistlib` による再パース | ✅ |
 | OTA マニフェスト | `plistlib` で構造検証 | ✅ |
 | X.509 / SPKI | `openssl x509` / `openssl pkey` で DER を解析 | ✅ |
@@ -194,7 +194,7 @@ OTA マニフェスト**を `itms-services` で開いた場合だけです。IPA
 Core/                 ポータブル C++20 コア + テスト
   include/ipashelf/   公開ヘッダ
   src/                実装（13 ユニット）
-  tests/              フェイクトランスポートによる 360 チェック
+  tests/              フェイクトランスポートによる 362 チェック
 IpaStore/
   Bridge/             Objective-C++ ブリッジ（サービス / インストール / SAP / Keychain）
   Sources/            SwiftUI 15 ファイル
@@ -212,7 +212,7 @@ reference/            参照用リポジトリ（ビルド対象外・コピー�
 ## テスト
 
 ```bash
-bash Scripts/build_core.sh            # 360 チェック + plistlib + openssl
+bash Scripts/build_core.sh            # 362 チェック + plistlib + openssl
 SANITIZE=1 bash Scripts/build_core.sh # ASan/UBSan 付き
 bash Scripts/check_static.sh          # Swift 構文・ブリッジ API・pbxproj
 ```

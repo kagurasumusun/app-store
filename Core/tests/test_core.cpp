@@ -1612,6 +1612,20 @@ void test_ota_router(const std::string& fixtures) {
   wrong_host.headers.set("Host", "evil.example");
   expect_eq(router.route(wrong_host).status, 421, "host mismatch");
 
+  // The router advertises 127.0.0.1 here, so use another LAN address for the
+  // reverse case: a listener that advertises a LAN address must still answer
+  // on loopback.
+  OtaRouter lan_router("https://192.168.1.5:8443", package);
+  HttpServerRequest loopback;
+  loopback.method = "GET";
+  loopback.path = "/ping";
+  loopback.headers.set("Host", "127.0.0.1:8443");
+  expect_eq(lan_router.route(loopback).status, 200, "loopback host allowed");
+  HttpServerRequest foreign = loopback;
+  foreign.headers.set("Host", "192.168.1.6:8443");
+  expect_eq(lan_router.route(foreign).status, 421,
+            "other LAN host rejected");
+
   HttpServerRequest options;
   options.method = "OPTIONS";
   options.path = "/install.plist";
