@@ -138,4 +138,20 @@ echo "size: $SIZE"
 echo "sha256: $(cat "$IPA.sha256")"
 echo "contents:"
 unzip -l "$IPA" | sed -n '1,6p'
+
+# Read the finished archive back with an independent implementation: layout,
+# plist, arm64-only slices and the build platform.
+if command -v python3 >/dev/null 2>&1; then
+  python3 Scripts/verify_ipa.py --expect-bundle-id "$BUNDLE_ID" "$IPA" \
+    || fail "the packaged archive did not verify"
+else
+  echo "python3 not found: skipping the independent archive check" >&2
+fi
+
 echo "IPA packaging: PASS"
+
+# The artifact is only reachable through the Actions UI; surface its
+# identity in the Checks API as well.
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+  echo "::notice::device IPA $(basename "$IPA") - $SIZE, sha256 $(cat "$IPA.sha256")"
+fi

@@ -68,6 +68,14 @@ else
   echo "  skipped: pip install pbxproj"
 fi
 
+echo "== IPA verifier"
+if python3 Scripts/verify_ipa.py --self-test >/dev/null 2>&1; then
+  echo "  self-test: ok (9 cases)"
+else
+  python3 Scripts/verify_ipa.py --self-test || true
+  status=1
+fi
+
 echo "== Shell scripts"
 shell_problems=0
 for script in Scripts/*.sh; do
