@@ -29,6 +29,12 @@ struct IpaInfo {
   bool declares_supported_platforms = false;
   /// Full archive paths from SC_Info/Manifest.plist's SinfPaths, if any.
   std::vector<std::string> sinf_paths;
+  /// `.sinf` files actually present under SC_Info, as (archive path,
+  /// uncompressed size) pairs. The store package and the download
+  /// response between them must leave a non-empty file at every path
+  /// in `sinf_paths`; anything else installs as far as iOS's FairPlay
+  /// check and fails there with a generic "unable to install".
+  std::vector<std::pair<std::string, std::uint64_t>> sinf_files;
   std::uint64_t file_size = 0;
 };
 
@@ -67,6 +73,17 @@ resolve_sinf_entries(const IpaInfo& info, const std::vector<Sinf>& sinfs);
 /// artwork and sinf entries are replaced; everything else is copied verbatim.
 [[nodiscard]] Status write_patched_ipa(const IpaPatchOptions& options,
                                        const CancellationToken& token);
+
+/// Verifies the FairPlay content of a finished archive: every sinf blob
+/// in `expected` (the entries handed to `write_patched_ipa`) must be
+/// present byte-for-byte, and every path the package's SC_Info manifest
+/// lists must hold a non-empty file. A package that fails this would
+/// download, transfer and only be rejected by iOS at the FairPlay step
+/// with an opaque "unable to install", so callers check before
+/// accepting the file into the library.
+[[nodiscard]] Status verify_ipa_fairplay(
+    const std::string& path,
+    const std::vector<std::pair<std::string, Bytes>>& expected);
 
 /// Builds the metadata document expected by Apple's installation tooling:
 /// the server-provided metadata plus the purchasing account identity.

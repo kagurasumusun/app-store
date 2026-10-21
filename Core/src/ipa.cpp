@@ -154,6 +154,22 @@ Result<IpaInfo> inspect_ipa(const std::string& path) {
     break;
   }
 
+  // Record the FairPlay files the archive actually carries, separate from
+  // the manifest's expectations: comparing the two is how a package that
+  // would die at iOS's FairPlay check is spotted before it is served.
+  // Each encrypted binary keeps its sinf in its own SC_Info directory
+  // (main app, frameworks, extensions), so match any of them.
+  for (mz_uint index = 0; index < count; ++index) {
+    mz_zip_archive_file_stat stat{};
+    if (!mz_zip_reader_file_stat(&archive, index, &stat)) continue;
+    const std::string_view name(stat.m_filename);
+    if (name.rfind(info.app_directory, 0) == 0 &&
+        name.find("/SC_Info/") != std::string_view::npos &&
+        ends_with(name, ".sinf")) {
+      info.sinf_files.emplace_back(std::string(name), stat.m_uncomp_size);
+    }
+  }
+
   return info;
 }
 
@@ -334,6 +350,96 @@ Status write_patched_ipa(const IpaPatchOptions& options,
     std::error_code remove_error;
     std::filesystem::remove(temporary, remove_error);
     return fail(ErrorCode::kStorage, "cannot move patched IPA into place");
+  }
+  return ok_status();
+}
+
+Status verify_ipa_fairplay(
+    const std::string& path,
+    const std::vector<std::pair<std::string, Bytes>>& expected) {
+  auto info = inspect_ipa(path);
+  if (!info) return info.error();
+
+  if (expected.empty()) {
+    // Nothing was injected, so the archive must stand on its own: any
+    // declared FairPlay slot left empty means the response supplied no
+    // sinf data for a package that needs it.
+    if (info.value().sinf_paths.empty() && info.value().sinf_files.empty()) {
+      return ok_status();
+    }
+    if (info.value().sinf_paths.empty()) {
+      // Files exist without a manifest; they are whatever the store
+      // package carried. Non-empty is all that can be checked here.
+      for (const auto& [file, size] : info.value().sinf_files) {
+        if (size == 0) {
+          return fail(ErrorCode::kParse,
+                      "the package carries an empty FairPlay file: " + file);
+        }
+      }
+      return ok_status();
+    }
+  }
+
+  mz_zip_archive archive{};
+  if (!mz_zip_reader_init_file(&archive, path.c_str(), 0)) {
+    return fail(ErrorCode::kParse,
+                zip_error(archive, "cannot reopen patched IPA"));
+  }
+  struct Guard {
+    mz_zip_archive* archive;
+    ~Guard() { mz_zip_reader_end(archive); }
+  } guard{&archive};
+
+  const auto find_index = [&](const std::string& name) -> int {
+    const mz_uint count = mz_zip_reader_get_num_files(&archive);
+    for (mz_uint index = 0; index < count; ++index) {
+      mz_zip_archive_file_stat stat{};
+      if (mz_zip_reader_file_stat(&archive, index, &stat) &&
+          matches_name(stat.m_filename, name)) {
+        return static_cast<int>(index);
+      }
+    }
+    return -1;
+  };
+
+  // Every declared slot must be filled, by an injected blob or by
+  // content the package already carried.
+  for (const std::string& slot : info.value().sinf_paths) {
+    const int index = find_index(slot);
+    if (index < 0) {
+      return fail(ErrorCode::kParse,
+                  "the package is missing its FairPlay file: " + slot);
+    }
+    mz_zip_archive_file_stat stat{};
+    if (!mz_zip_reader_file_stat(&archive, static_cast<mz_uint>(index),
+                                 &stat) ||
+        stat.m_uncomp_size == 0) {
+      return fail(ErrorCode::kParse,
+                  "the package carries an empty FairPlay file: " + slot);
+    }
+  }
+
+  // Injected blobs must have landed byte-for-byte.
+  for (const auto& [name, blob] : expected) {
+    const int index = find_index(name);
+    if (index < 0) {
+      return fail(ErrorCode::kParse,
+                  "the patched package is missing FairPlay file: " + name);
+    }
+    mz_zip_archive_file_stat stat{};
+    if (!mz_zip_reader_file_stat(&archive, static_cast<mz_uint>(index),
+                                 &stat)) {
+      return fail(ErrorCode::kParse, "cannot stat FairPlay file: " + name);
+    }
+    auto stored = extract_entry(archive, static_cast<mz_uint>(index),
+                                stat.m_uncomp_size, "patched sinf");
+    if (!stored) return stored.error();
+    if (stored.value() != blob) {
+      return fail(ErrorCode::kParse,
+                  "patched FairPlay data does not match the download "
+                  "response: " +
+                      name);
+    }
   }
   return ok_status();
 }

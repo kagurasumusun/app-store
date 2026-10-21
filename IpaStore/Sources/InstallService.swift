@@ -81,6 +81,12 @@ final class InstallService {
         if let pingURL {
             noteDiagnostic("Listening at \(pingURL.absoluteString)")
         }
+        if let email = item.accountEmail {
+            // The FairPlay authorization inside the package belongs to
+            // this account; iOS rejects the install when the device's
+            // App Store (Media & Purchases) sign-in is a different one.
+            noteDiagnostic("Licensed to \(email)")
+        }
         phase = .ready
         message = "Waiting for the device"
     }

@@ -11,6 +11,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -2161,6 +2162,19 @@ void test_ipa_patch(const std::string& fixtures) {
                           "SC_Info/Kit.sinf"),
               "framework sinf path");
   }
+  expect_eq(info.value().sinf_files.size(), std::size_t{2},
+            "carried sinf files listed");
+  if (info.value().sinf_files.size() == 2) {
+    std::uint64_t sinf_bytes = 0;
+    for (const auto& [file, size] : info.value().sinf_files) {
+      (void)file;
+      sinf_bytes += size;
+    }
+    expect_eq(sinf_bytes, std::uint64_t{13 + 17},
+              "carried sinf sizes reported");
+  }
+  expect(verify_ipa_fairplay(source, {}).ok(),
+         "source with filled sinf slots verifies");
 
   // Platform validation mirrors the reference rules: declared support is
   // required, except that a missing declaration is tolerated for iPhoneOS.
@@ -2299,8 +2313,177 @@ void test_ipa_patch(const std::string& fixtures) {
   expect(find_entry("iTunesMetadata.plist") >= 0, "metadata at root");
   mz_zip_reader_end(&archive);
 
+  // The finished archive carries the injected blobs byte-for-byte at the
+  // declared slots; a tampered expectation must not verify.
+  expect(verify_ipa_fairplay(options.destination_path,
+                             sinf_entries.value())
+             .ok(),
+         "patched IPA verifies against its sinf blobs");
+  auto wrong_blob = sinf_entries.value();
+  wrong_blob.front().second = bytes_of("patched-sinf-1-but-different");
+  expect(!verify_ipa_fairplay(options.destination_path, wrong_blob).ok(),
+         "mismatched sinf expectation rejected");
+  auto missing_blob = sinf_entries.value();
+  missing_blob.emplace_back("Payload/Sample.app/SC_Info/Gone.sinf",
+                            bytes_of("x"));
+  expect(!verify_ipa_fairplay(options.destination_path, missing_blob).ok(),
+         "missing sinf entry rejected");
+
   std::ofstream marker(fixtures + "/patched.ready");
   marker << "ok";
+}
+
+// The patcher must copy untouched entries byte-verbatim, Unix mode bits
+// included: the main executable's exec bit and framework symlinks are
+// part of what iOS validates, and a rebuild that strips them produces
+// an uninstallable package. miniz's writer cannot *set* external
+// attributes, so the source archive here is hand-rolled with them.
+void test_ipa_patch_preserves_attributes(const std::string& fixtures) {
+  using namespace ipashelf;
+  struct RawEntry {
+    std::string name;
+    std::string data;
+    std::uint32_t external_attr;
+  };
+  const std::vector<RawEntry> entries = {
+      {"Payload/Z.app/Z", "MACHO", (0100755u << 16)},
+      {"Payload/Z.app/Frameworks/F.framework/Current", "A", (0120777u << 16)},
+      {"Payload/Z.app/SC_Info/Z.sinf", "OLD-SINF", (0100644u << 16)},
+  };
+  std::string out;
+  const auto put16 = [&](std::uint16_t value) {
+    out.push_back(static_cast<char>(value & 0xff));
+    out.push_back(static_cast<char>((value >> 8) & 0xff));
+  };
+  const auto put32 = [&](std::uint32_t value) {
+    put16(static_cast<std::uint16_t>(value & 0xffff));
+    put16(static_cast<std::uint16_t>((value >> 16) & 0xffff));
+  };
+  struct CentralRecord {
+    const RawEntry* entry;
+    std::uint32_t crc;
+    std::size_t offset;
+  };
+  std::vector<CentralRecord> centrals;
+  for (const auto& entry : entries) {
+    const std::size_t offset = out.size();
+    const auto crc = static_cast<std::uint32_t>(mz_crc32(
+        MZ_CRC32_INIT,
+        reinterpret_cast<const mz_uint8*>(entry.data.data()),
+        entry.data.size()));
+    put32(0x04034b50);
+    put16(20);
+    put16(0);
+    put16(0);  // stored
+    put16(0);
+    put16(0x21);
+    put32(crc);
+    put32(static_cast<std::uint32_t>(entry.data.size()));
+    put32(static_cast<std::uint32_t>(entry.data.size()));
+    put16(static_cast<std::uint16_t>(entry.name.size()));
+    put16(0);
+    out += entry.name;
+    out += entry.data;
+    centrals.push_back({&entry, crc, offset});
+  }
+  const std::size_t central_offset = out.size();
+  for (const auto& central : centrals) {
+    put32(0x02014b50);
+    put16(0x0314);  // made by: Unix, spec 2.0
+    put16(20);
+    put16(0);
+    put16(0);
+    put16(0);
+    put16(0x21);
+    put32(central.crc);
+    put32(static_cast<std::uint32_t>(central.entry->data.size()));
+    put32(static_cast<std::uint32_t>(central.entry->data.size()));
+    put16(static_cast<std::uint16_t>(central.entry->name.size()));
+    put16(0);
+    put16(0);
+    put16(0);
+    put16(0);
+    put32(central.entry->external_attr);
+    put32(static_cast<std::uint32_t>(central.offset));
+    out += central.entry->name;
+  }
+  const std::size_t central_size = out.size() - central_offset;
+  put32(0x06054b50);
+  put16(0);
+  put16(0);
+  put16(static_cast<std::uint16_t>(centrals.size()));
+  put16(static_cast<std::uint16_t>(centrals.size()));
+  put32(static_cast<std::uint32_t>(central_size));
+  put32(static_cast<std::uint32_t>(central_offset));
+  put16(0);
+
+  const std::string source = fixtures + "/attributes.ipa";
+  {
+    std::ofstream file(source, std::ios::binary);
+    file << out;
+  }
+
+  IpaPatchOptions options;
+  options.source_path = source;
+  options.destination_path = fixtures + "/attributes-patched.ipa";
+  options.sinf_entries = {
+      {"Payload/Z.app/SC_Info/Z.sinf", bytes_of("NEW-SINF")}};
+  CancellationSource token;
+  const Status status = write_patched_ipa(options, token.token());
+  expect(status.ok(), "attribute fixture patches");
+  if (!status) return;
+
+  mz_zip_archive archive{};
+  expect(mz_zip_reader_init_file(&archive, options.destination_path.c_str(),
+                                 0),
+         "attribute-patched IPA opens");
+  struct Found {
+    std::uint32_t external_attr = 0;
+    std::uint16_t version_made_by = 0;
+    std::string data;
+  };
+  std::map<std::string, Found> found;
+  const mz_uint count = mz_zip_reader_get_num_files(&archive);
+  for (mz_uint index = 0; index < count; ++index) {
+    mz_zip_archive_file_stat stat{};
+    if (!mz_zip_reader_file_stat(&archive, index, &stat)) continue;
+    Bytes buffer(static_cast<std::size_t>(stat.m_uncomp_size));
+    if (stat.m_uncomp_size > 0 &&
+        !mz_zip_reader_extract_to_mem(&archive, index, buffer.data(),
+                                      buffer.size(), 0)) {
+      continue;
+    }
+    found[stat.m_filename] = Found{
+        stat.m_external_attr, stat.m_version_made_by,
+        std::string(reinterpret_cast<const char*>(buffer.data()),
+                    buffer.size())};
+  }
+  mz_zip_reader_end(&archive);
+
+  const auto binary = found.find("Payload/Z.app/Z");
+  expect(binary != found.end(), "executable copied");
+  if (binary != found.end()) {
+    expect_eq(binary->second.external_attr, (0100755u << 16),
+              "executable mode preserved");
+    expect_eq(binary->second.version_made_by, std::uint16_t{0x0314},
+              "creator OS preserved");
+    expect_eq(binary->second.data, std::string("MACHO"),
+              "executable content preserved");
+  }
+  const auto link = found.find("Payload/Z.app/Frameworks/F.framework/Current");
+  expect(link != found.end(), "symlink copied");
+  if (link != found.end()) {
+    expect_eq(link->second.external_attr, (0120777u << 16),
+              "symlink mode preserved");
+    expect_eq(link->second.data, std::string("A"),
+              "symlink target preserved");
+  }
+  const auto sinf = found.find("Payload/Z.app/SC_Info/Z.sinf");
+  expect(sinf != found.end(), "sinf present");
+  if (sinf != found.end()) {
+    expect_eq(sinf->second.data, std::string("NEW-SINF"),
+              "sinf entry replaced");
+  }
 }
 
 void test_map_store_failure() {
@@ -3576,6 +3759,7 @@ int main(int argc, char** argv) {
   test_plist_binary_write(fixtures);
   test_account_json();
   test_ipa_patch(fixtures);
+  test_ipa_patch_preserves_attributes(fixtures);
   test_url();
   test_bag();
   test_login_success();

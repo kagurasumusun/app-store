@@ -528,6 +528,15 @@ struct LibraryItem: Identifiable, Hashable {
         return URL(string: artwork)
     }
 
+    /// The Apple ID the package's FairPlay license belongs to, as
+    /// recorded at download time. iOS only installs the package while
+    /// the device's App Store (Media & Purchases) account is this one.
+    var accountEmail: String? {
+        guard let account = sidecar["account"] as? String,
+              !account.isEmpty else { return nil }
+        return account
+    }
+
     private var sidecar: [String: Any] {
         let url = fileURL.appendingPathExtension("json")
         guard let data = try? Data(contentsOf: url),

@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "ipashelf/crypto.hpp"
+#include "ipashelf/ipa.hpp"
 #include "ipashelf/ota.hpp"
 #include "ipashelf/x509.hpp"
 
@@ -1427,6 +1428,29 @@ struct ConnectionState {
     [self unpublishInstallHost];
     [self setState:IPInstallServerStateFailed progress:0 message:@"HTTP failed"];
     return NO;
+  }
+  // State the package's FairPlay evidence up front: if installation
+  // later fails inside iOS with its usual opaque alert, this line is
+  // what separates "no usable sinf in the archive" from every other
+  // cause (chiefly a device App Store account other than the one the
+  // package was licensed to).
+  if (auto package =
+          ipashelf::inspect_ipa(std::string(_ipaPath.UTF8String ?: ""));
+      package) {
+    std::uint64_t sinfBytes = 0;
+    for (const auto& [sinfFile, sinfSize] : package.value().sinf_files) {
+      (void)sinfFile;
+      sinfBytes += sinfSize;
+    }
+    [self noteActivity:[NSString
+                           stringWithFormat:
+                               @"Package: %zu sinf file(s), %llu bytes "
+                               @"(%zu declared)",
+                               package.value().sinf_files.size(),
+                               (unsigned long long)sinfBytes,
+                               package.value().sinf_paths.size()]];
+  } else {
+    [self noteActivity:@"Package inspection failed"];
   }
   [self setState:IPInstallServerStateWaiting progress:0
           message:@"Waiting for the device"];

@@ -536,6 +536,7 @@ NSString *SafeFilename(NSString *value) {
 // ---------------------------------------------------------------------------
 
 static NSDictionary<NSString *, id> *SidecarForApp(IPStoreApp *app,
+                                                   IPStoreAccount *account,
                                                    ipashelf::DownloadOffer &offer,
                                                    NSString *path,
                                                    long long size) {
@@ -546,6 +547,11 @@ static NSDictionary<NSString *, id> *SidecarForApp(IPStoreApp *app,
     @"version" : app.version ?: @"",
     @"externalVersionID" :
         [NSString stringWithUTF8String:offer.external_version_id.c_str()] ?: @"",
+    // The FairPlay license inside the package belongs to this account;
+    // the install sheet surfaces it so an account mismatch with the
+    // device's App Store sign-in is visible instead of silent.
+    @"account" : account.email ?: @"",
+    @"sinfCount" : @((long long)offer.sinfs.size()),
     @"downloadedAt" : @([[NSDate date] timeIntervalSince1970]),
     @"size" : @(size),
     @"file" : path.lastPathComponent ?: @"",
@@ -1151,6 +1157,23 @@ static ipashelf::StoreClient MakeStoreClient(void) {
     completion(nil, MakeError(sinfEntries.error()));
     return;
   }
+  // Fail loudly and early when the response carried no FairPlay data for
+  // a package that declares (or already holds) sinf slots. Patching
+  // without blobs silently produces an archive that transfers fine and
+  // is then rejected by iOS at the FairPlay check with a generic
+  // "unable to install" — the worst possible place to learn about it.
+  const bool packageUsesFairPlay = !info.value().sinf_paths.empty() ||
+                                   !info.value().sinf_files.empty();
+  if (packageUsesFairPlay && offer.sinfs.empty()) {
+    [manager removeItemAtPath:path error:nil];
+    completion(nil, MakeErrorCode(IPStoreErrorIntegrity,
+                                  @"Apple's download response carried no "
+                                  @"FairPlay data (sinf), so this package "
+                                  @"cannot be installed."));
+    return;
+  }
+  NSLog(@"IPAShelf download: %zu sinf blob(s) for %zu declared slot(s)",
+        offer.sinfs.size(), info.value().sinf_paths.size());
 
   ipashelf::IpaPatchOptions options;
   options.source_path = source;
@@ -1174,9 +1197,18 @@ static ipashelf::StoreClient MakeStoreClient(void) {
     completion(nil, MakeError(status.error()));
     return;
   }
+  // Prove before accepting the file into the library that the FairPlay
+  // blobs landed byte-for-byte and every declared slot is filled.
+  auto verification = ipashelf::verify_ipa_fairplay(options.destination_path,
+                                                    options.sinf_entries);
+  if (!verification) {
+    [manager removeItemAtPath:destination error:nil];
+    completion(nil, MakeError(verification.error()));
+    return;
+  }
 
   NSDictionary<NSString *, id> *sidecar = SidecarForApp(
-      app, offer, destination, (long long)info.value().file_size);
+      app, account, offer, destination, (long long)info.value().file_size);
   NSData *json = [NSJSONSerialization dataWithJSONObject:sidecar
                                                  options:NSJSONWritingPrettyPrinted
                                                    error:nil];
