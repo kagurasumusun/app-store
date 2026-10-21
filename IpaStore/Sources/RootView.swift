@@ -10,6 +10,9 @@ struct RootView: View {
         @Bindable var model = model
 
         TabView(selection: $model.selectedTab) {
+            Tab(AppTab.apps.title, systemImage: AppTab.apps.systemImage, value: AppTab.apps) {
+                HomeView()
+            }
             Tab(AppTab.search.title, systemImage: AppTab.search.systemImage, value: AppTab.search) {
                 SearchView()
             }

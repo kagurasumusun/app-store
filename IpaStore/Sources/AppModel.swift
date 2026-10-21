@@ -91,6 +91,7 @@ final class DownloadItem: Identifiable {
 /// traps when the selection does not match a visible tab. Accounts and
 /// settings live behind the avatar button, like the App Store account page.
 enum AppTab: String, Hashable, CaseIterable, Identifiable {
+    case apps
     case search
     case purchased
     case downloads
@@ -99,6 +100,7 @@ enum AppTab: String, Hashable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .apps: return String(localized: "Apps")
         case .search: return String(localized: "Search")
         case .purchased: return String(localized: "Purchased")
         case .downloads: return String(localized: "Downloads")
@@ -107,9 +109,51 @@ enum AppTab: String, Hashable, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
+        case .apps: return "square.grid.2x2"
         case .search: return "magnifyingglass"
         case .purchased: return "bag"
         case .downloads: return "arrow.down.circle"
+        }
+    }
+}
+
+/// One ranked storefront chart on the home screen.
+struct HomeChart: Identifiable {
+    let id: String
+    let title: String
+    let apps: [StoreApp]
+}
+
+/// Purchased-list scope, mirroring the App Store's All / Not on this
+/// iPhone segmented control — "on this device" here means the package
+/// is in the on-device library, which is what this app can truthfully
+/// know (installed-app detection needs private API).
+enum OwnedSegment: String, CaseIterable, Identifiable {
+    case all
+    case downloaded
+    case notDownloaded
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return String(localized: "All")
+        case .downloaded: return String(localized: "Downloaded")
+        case .notDownloaded: return String(localized: "Not Downloaded")
+        }
+    }
+}
+
+enum OwnedSort: String, CaseIterable, Identifiable {
+    case recent
+    case name
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .recent: return String(localized: "Recently Purchased")
+        case .name: return String(localized: "Name")
         }
     }
 }
@@ -149,6 +193,8 @@ final class AppModel {
     /// nil means "every platform".
     var ownedPlatformFilter: StorePlatform?
     var ownedSearch = ""
+    var ownedSegment: OwnedSegment = .all
+    var ownedSort: OwnedSort = .recent
 
     // Downloads and downloaded files
     var downloads: [DownloadItem] = []
@@ -159,7 +205,15 @@ final class AppModel {
     var installService = InstallService()
 
     // Presentation
-    var selectedTab: AppTab = .search
+    var selectedTab: AppTab = .apps
+
+    // Home (storefront charts from Apple's public marketing-tools feed,
+    // enriched to full catalog records through the batched lookup).
+    var homeCharts: [HomeChart] = []
+    var isLoadingHome = false
+    var homeError: String?
+    private var homeRegion = ""
+    private var homePlatform: StorePlatform?
     var alert: AlertMessage?
     var showLogin = false
     var showAccount = false
@@ -333,6 +387,83 @@ final class AppModel {
         }
     }
 
+    // MARK: Home charts
+
+    /// Loads the storefront's Top Free / Top Paid charts. The public
+    /// marketing-tools feed only names ranked app ids; the batched Core
+    /// lookup turns them into full catalog records (prices, ratings,
+    /// handles) in one request per chart, so chart rows behave exactly
+    /// like search results. Browsing needs no sign-in — only GET does.
+    func loadHome(force: Bool = false) async {
+        if isLoadingHome { return }
+        if !force, homeRegion == region, homePlatform == platform,
+           !homeCharts.isEmpty {
+            return
+        }
+        isLoadingHome = true
+        homeError = nil
+        defer { isLoadingHome = false }
+        do {
+            let country = region.lowercased()
+            async let freeIDs = Self.chartIDs(country: country, chart: "top-free")
+            async let paidIDs = Self.chartIDs(country: country, chart: "top-paid")
+            let (free, paid) = try await (freeIDs, paidIDs)
+            async let freeApps = service.lookupApps(appIDs: free,
+                                                    region: region,
+                                                    platform: platform)
+            async let paidApps = service.lookupApps(appIDs: paid,
+                                                    region: region,
+                                                    platform: platform)
+            let charts = [
+                HomeChart(id: "top-free",
+                          title: String(localized: "Top Free Apps"),
+                          apps: try await freeApps),
+                HomeChart(id: "top-paid",
+                          title: String(localized: "Top Paid Apps"),
+                          apps: try await paidApps),
+            ].filter { !$0.apps.isEmpty }
+            homeCharts = charts
+            homeRegion = region
+            homePlatform = platform
+            if charts.isEmpty {
+                homeError = String(localized: "No charts are available in this region.")
+            }
+        } catch {
+            homeError = StoreError(error).message
+        }
+    }
+
+    private static func chartIDs(country: String, chart: String) async throws -> [Int64] {
+        guard let url = URL(string: "https://rss.marketingtools.apple.com/api/v2/\(country)/apps/\(chart)/25/apps.json") else {
+            return []
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let feed = root["feed"] as? [String: Any],
+              let results = feed["results"] as? [[String: Any]] else {
+            throw StoreError(code: .invalidResponse,
+                             message: "The chart feed could not be read.")
+        }
+        return results.compactMap { entry in
+            if let text = entry["id"] as? String { return Int64(text) }
+            if let number = entry["id"] as? NSNumber { return number.int64Value }
+            return nil
+        }
+    }
+
+    /// Full catalog record for a sparse app (purchase history rows carry
+    /// no description, screenshots or ratings). Returns nil on failure so
+    /// detail pages keep showing what they already have.
+    func lookupFull(_ app: StoreApp) async -> StoreApp? {
+        try? await service.lookup(appID: app.appID,
+                                  bundleID: app.bundleID.isEmpty ? nil : app.bundleID,
+                                  region: region,
+                                  platform: platform)
+    }
+
     private func remember(term: String) {
         var updated = recentSearches.filter { $0.caseInsensitiveCompare(term) != .orderedSame }
         updated.insert(term, at: 0)
@@ -435,12 +566,30 @@ final class AppModel {
     var ownedHasMore: Bool { ownedApps.count < ownedTotal }
 
     var visibleOwnedApps: [StoreApp] {
-        let needle = ownedSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !needle.isEmpty else { return ownedApps }
-        return ownedApps.filter {
-            $0.name.localizedCaseInsensitiveContains(needle)
-                || $0.bundleID.localizedCaseInsensitiveContains(needle)
+        var apps = ownedApps
+        if ownedSegment != .all {
+            let appIDs = Set(library.compactMap(\.appID))
+            let bundles = Set(library.map { $0.bundleID.lowercased() })
+            apps = apps.filter { app in
+                let downloaded = appIDs.contains(app.appID)
+                    || (!app.bundleID.isEmpty
+                        && bundles.contains(app.bundleID.lowercased()))
+                return ownedSegment == .downloaded ? downloaded : !downloaded
+            }
         }
+        let needle = ownedSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !needle.isEmpty {
+            apps = apps.filter {
+                $0.name.localizedCaseInsensitiveContains(needle)
+                    || $0.bundleID.localizedCaseInsensitiveContains(needle)
+            }
+        }
+        if ownedSort == .name {
+            apps.sort {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        }
+        return apps
     }
 
     func isOwned(_ appID: Int64) -> Bool {
@@ -536,6 +685,19 @@ final class AppModel {
         if activeDownload(for: app.appID, versionID: versionID) != nil { return }
         Task {
             var resolved = account
+            var app = app
+            if app.handle == nil {
+                // Sparse records carry no bridge handle; resolve the full
+                // catalog record first so purchase and download take
+                // exactly the search-result path.
+                guard let full = await lookupFull(app) else {
+                    presentMessage(
+                        String(localized: "Not Available"),
+                        String(localized: "This app is not available in the selected storefront."))
+                    return
+                }
+                app = full
+            }
             if app.isFree, !isOwned(app.appID) {
                 do {
                     try await service.purchase(app: app, account: resolved, platform: platform)

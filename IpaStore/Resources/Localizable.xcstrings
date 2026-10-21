@@ -276,6 +276,28 @@
         }
       }
     },
+    "All Downloaded": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "すべてダウンロード済み"
+          }
+        }
+      }
+    },
+    "All Platforms": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "すべてのプラットフォーム"
+          }
+        }
+      }
+    },
     "App ID": {
       "extractionState": "manual",
       "localizations": {
@@ -338,6 +360,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "Appleはダウンロードトークンを定期的に失効させます。更新すると保存済みパスワードで再サインインし、新しいトークンを保存します。IPAShelfはトークン切れが検出された場合にも自動でこれを行います。"
+          }
+        }
+      }
+    },
+    "Apps": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App"
+          }
+        }
+      }
+    },
+    "Apps you download from your purchases will appear here.": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "購入済みからダウンロードしたアプリがここに表示されます。"
           }
         }
       }
@@ -562,6 +606,17 @@
         }
       }
     },
+    "Couldn't Load Charts": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ランキングを読み込めませんでした"
+          }
+        }
+      }
+    },
     "Couldn't Load Purchases": {
       "extractionState": "manual",
       "localizations": {
@@ -701,6 +756,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "デバイスID (GUID)"
+          }
+        }
+      }
+    },
+    "Discover": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "見つける"
           }
         }
       }
@@ -892,6 +958,17 @@
         }
       }
     },
+    "Every purchased app is already in your library.": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "購入済みのアプリはすべてライブラリにあります。"
+          }
+        }
+      }
+    },
     "Every version Apple still serves for this app — not just the latest — can be downloaded here.": {
       "extractionState": "manual",
       "localizations": {
@@ -899,6 +976,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "最新版だけでなく、Appleが配信中の全バージョンをここからダウンロードできます。"
+          }
+        }
+      }
+    },
+    "Filter": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "フィルタ"
           }
         }
       }
@@ -1310,6 +1398,17 @@
         }
       }
     },
+    "Loading…": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "読み込み中…"
+          }
+        }
+      }
+    },
     "Medical": {
       "extractionState": "manual",
       "localizations": {
@@ -1420,6 +1519,17 @@
         }
       }
     },
+    "No Downloaded Apps": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ダウンロード済みのアプリはありません"
+          }
+        }
+      }
+    },
     "No Downloads Yet": {
       "extractionState": "manual",
       "localizations": {
@@ -1431,6 +1541,17 @@
         }
       }
     },
+    "No charts are available in this region.": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この国/地域ではランキングを利用できません。"
+          }
+        }
+      }
+    },
     "No ratings": {
       "extractionState": "manual",
       "localizations": {
@@ -1438,6 +1559,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "評価なし"
+          }
+        }
+      }
+    },
+    "Not Available": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "入手できません"
+          }
+        }
+      }
+    },
+    "Not Downloaded": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未ダウンロード"
           }
         }
       }
@@ -1728,6 +1871,17 @@
         }
       }
     },
+    "Platform": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "プラットフォーム"
+          }
+        }
+      }
+    },
     "Preparing": {
       "extractionState": "manual",
       "localizations": {
@@ -1878,6 +2032,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "最近の検索"
+          }
+        }
+      }
+    },
+    "Recently Purchased": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最近購入した順"
           }
         }
       }
@@ -2069,6 +2234,17 @@
         }
       }
     },
+    "Scope": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "表示範囲"
+          }
+        }
+      }
+    },
     "Search": {
       "extractionState": "manual",
       "localizations": {
@@ -2098,6 +2274,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "App Storeを検索"
+          }
+        }
+      }
+    },
+    "See All": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "すべて見る"
           }
         }
       }
@@ -2333,6 +2520,17 @@
         }
       }
     },
+    "Sort": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "並べ替え"
+          }
+        }
+      }
+    },
     "Sort by": {
       "extractionState": "manual",
       "localizations": {
@@ -2454,6 +2652,28 @@
         }
       }
     },
+    "The install server answered with an unexpected response.": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "インストールサーバーから予期しない応答がありました。"
+          }
+        }
+      }
+    },
+    "The install server did not respond on this device: %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このデバイス上のインストールサーバーが応答しませんでした: %@"
+          }
+        }
+      }
+    },
     "This account owns no apps on the selected platform.": {
       "extractionState": "manual",
       "localizations": {
@@ -2476,6 +2696,28 @@
         }
       }
     },
+    "This app is not available in the selected storefront.": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このアプリは選択中のストアでは入手できません。"
+          }
+        }
+      }
+    },
+    "Tip: search by bundle ID or paste an App Store link. Older versions live on each app's page.": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ヒント: バンドルIDでの検索や、App Store リンクの貼り付けもできます。過去バージョンは各アプリのページから取得できます。"
+          }
+        }
+      }
+    },
     "Token": {
       "extractionState": "manual",
       "localizations": {
@@ -2483,6 +2725,39 @@
           "stringUnit": {
             "state": "translated",
             "value": "トークン"
+          }
+        }
+      }
+    },
+    "Top Charts": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "トップチャート"
+          }
+        }
+      }
+    },
+    "Top Free Apps": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無料Appトップ"
+          }
+        }
+      }
+    },
+    "Top Paid Apps": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有料Appトップ"
           }
         }
       }

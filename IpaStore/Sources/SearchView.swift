@@ -195,7 +195,7 @@ struct SearchView: View {
                 if !model.recentSearches.isEmpty {
                     recentSearches
                 }
-                featureCard
+                discoverSection
             }
             .padding(.horizontal, 20)
             .padding(.top, 8)
@@ -276,40 +276,52 @@ struct SearchView: View {
         }
     }
 
-    private var featureCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            featureRow(symbol: "magnifyingglass",
-                       title: String(localized: "Search the App Store"),
-                       message: String(localized: "Every app, in any storefront — by name or bundle ID — for iPhone, iPad, Mac, Apple TV, Apple Watch and Vision Pro."))
-            featureRow(symbol: "clock.arrow.circlepath",
-                       title: String(localized: "Download any version"),
-                       message: String(localized: "Not just the latest build — every version Apple still serves for your account."))
-            featureRow(symbol: "arrow.down.app",
-                       title: String(localized: "Install on this device"),
-                       message: String(localized: "Packages install right here over a local connection. No computer, no cables."))
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color(.secondarySystemBackground))
+    /// Browse shortcuts in the App Store Search-tab style, replacing the
+    /// old marketing card: the storefront charts and the purchase
+    /// history are one tap away, and the one power feature worth
+    /// surfacing (exact-identifier search) is a single footnote.
+    private var discoverSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            SectionHeader(title: "Discover")
+            VStack(spacing: 0) {
+                discoverRow(symbol: "chart.bar.fill",
+                            title: String(localized: "Top Charts")) {
+                    model.selectedTab = .apps
+                }
+                Divider().padding(.leading, 42)
+                discoverRow(symbol: "bag.fill",
+                            title: String(localized: "Purchased")) {
+                    model.selectedTab = .purchased
+                }
+            }
+            Text("Tip: search by bundle ID or paste an App Store link. Older versions live on each app's page.")
+                .font(.system(size: 12))
+                .foregroundStyle(.tertiary)
+                .padding(.top, 10)
         }
     }
 
-    private func featureRow(symbol: String, title: String, message: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: symbol)
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(theme.accentColor)
-                .frame(width: 30)
-            VStack(alignment: .leading, spacing: 2) {
+    private func discoverRow(symbol: String,
+                             title: String,
+                             action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: symbol)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(theme.accentColor)
+                    .frame(width: 30)
                 Text(title)
-                    .font(.system(size: 15, weight: .semibold))
-                Text(message)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 16))
+                    .foregroundStyle(.primary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.tertiary)
             }
+            .padding(.vertical, 11)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
     // MARK: Search scheduling

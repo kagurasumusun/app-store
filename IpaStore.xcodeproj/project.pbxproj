@@ -12,6 +12,7 @@
 		C62A2F48BB208A90E6619366 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A892E376A8A0CDDC9F45F6F /* AppModel.swift */; };
 		B078589A09F7E7AB3C35C551 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EAA8BEFFABD8E6E4544F677 /* Components.swift */; };
 		C450AC81439C9528CAD0A020 /* DownloadsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFA7C482666778E67BF9AD5A /* DownloadsView.swift */; };
+		B84B63EF14D2A1EF1C957ADA /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44003038F7755AF725C01468 /* HomeView.swift */; };
 		9012C75143B7BF6FA3897687 /* InstallService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4DCB726D41597F21D641D6B /* InstallService.swift */; };
 		92C1973F6840AC053839F6AA /* InstallSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DA8B8D57FFCAC18C64DC108 /* InstallSheet.swift */; };
 		5EBFF092CE2F0128B5A0605F /* IpaStoreApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0687B2F4F4417592179EC531 /* IpaStoreApp.swift */; };
@@ -61,6 +62,7 @@
 		6A892E376A8A0CDDC9F45F6F /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		5EAA8BEFFABD8E6E4544F677 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
 		EFA7C482666778E67BF9AD5A /* DownloadsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadsView.swift; sourceTree = "<group>"; };
+		44003038F7755AF725C01468 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		E4DCB726D41597F21D641D6B /* InstallService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallService.swift; sourceTree = "<group>"; };
 		6DA8B8D57FFCAC18C64DC108 /* InstallSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallSheet.swift; sourceTree = "<group>"; };
 		0687B2F4F4417592179EC531 /* IpaStoreApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IpaStoreApp.swift; sourceTree = "<group>"; };
@@ -176,6 +178,7 @@
 				0687B2F4F4417592179EC531 /* IpaStoreApp.swift */,
 				2408AA2408B6D9F0662297FA /* StoreService.swift */,
 				2BCEFB0AAE2E4C6F05C2CD1F /* RootView.swift */,
+				44003038F7755AF725C01468 /* HomeView.swift */,
 				45E42225B2B5E719CFB3ECB7 /* PurchasedView.swift */,
 				5EAA8BEFFABD8E6E4544F677 /* Components.swift */,
 				63767D30038A4590E38C8D9F /* AccountsView.swift */,
@@ -421,6 +424,7 @@
 				C62A2F48BB208A90E6619366 /* AppModel.swift in Sources */,
 				B078589A09F7E7AB3C35C551 /* Components.swift in Sources */,
 				C450AC81439C9528CAD0A020 /* DownloadsView.swift in Sources */,
+				B84B63EF14D2A1EF1C957ADA /* HomeView.swift in Sources */,
 				9012C75143B7BF6FA3897687 /* InstallService.swift in Sources */,
 				92C1973F6840AC053839F6AA /* InstallSheet.swift in Sources */,
 				5EBFF092CE2F0128B5A0605F /* IpaStoreApp.swift in Sources */,

@@ -5,7 +5,19 @@ import SwiftUI
 struct AppDetailView: View {
     @Environment(AppModel.self) private var model
     @Environment(ThemeStore.self) private var theme
-    let app: StoreApp
+    /// Starts as the record the user navigated from; sparse records
+    /// (purchase history carries no description, screenshots or ratings)
+    /// are swapped for the full catalog record once it loads, so the
+    /// page never reads as a stub.
+    @State private var app: StoreApp
+    /// Purchase date of the incoming record, kept across enrichment
+    /// (lookup results do not carry it).
+    private let initialPurchaseDate: Date?
+
+    init(app: StoreApp) {
+        _app = State(initialValue: app)
+        initialPurchaseDate = app.purchaseDate
+    }
 
     @State private var showAllDescription = false
     @State private var showAllNotes = false
@@ -84,6 +96,19 @@ struct AppDetailView: View {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: showNavHeader)
+        .task {
+            await enrichIfNeeded()
+        }
+    }
+
+    private func enrichIfNeeded() async {
+        guard app.description.isEmpty || app.screenshots.isEmpty
+                || app.handle == nil else {
+            return
+        }
+        if let full = await model.lookupFull(app), full.appID == app.appID {
+            app = full
+        }
     }
 
     // MARK: Header
@@ -486,7 +511,7 @@ struct AppDetailView: View {
         if !app.currentVersionReleaseDate.isEmpty {
             rows.append((String(localized: "Updated"), app.currentVersionDateFormatted))
         }
-        if let purchaseDate = app.purchaseDate {
+        if let purchaseDate = app.purchaseDate ?? initialPurchaseDate {
             rows.append((String(localized: "Purchased"),
                          purchaseDate.formatted(date: .abbreviated, time: .omitted)))
         }
