@@ -1079,9 +1079,13 @@ struct ConnectionState {
     ipashelf::CertificateOptions options;
     options.subject.common_name = "IPAShelf Device";
     options.subject.organization = "IPAShelf";
+    // The issuer name must be byte-identical to the root CA's subject as
+    // built in prepareCertificateWithError (CN + O only). This used to add
+    // a country the CA does not carry, so name chaining failed, the chain
+    // verification below rejected every freshly built leaf, and the
+    // server never started at all.
     options.issuer.common_name = "IPAShelf Root CA";
     options.issuer.organization = "IPAShelf";
-    options.issuer.country = "US";
     options.serial = 2;
     options.not_before = std::time(nullptr) - 24 * 60 * 60;
     options.validity_seconds = 2ULL * 365 * 24 * 60 * 60;
@@ -1444,6 +1448,11 @@ struct ConnectionState {
 - (nullable NSString *)manifestURL {
   if (!_router) return nil;
   return [NSString stringWithUTF8String:_router->manifest_url().c_str()];
+}
+
+- (nullable NSString *)pingURL {
+  if (!_router) return nil;
+  return [NSString stringWithUTF8String:_router->ping_url().c_str()];
 }
 
 - (nullable NSString *)installURL {

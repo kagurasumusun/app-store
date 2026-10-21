@@ -65,6 +65,11 @@ typedef NS_ENUM(NSInteger, IPInstallServerState) {
 @property (nonatomic, copy, readonly, nullable) NSString *installURL;
 /// HTTPS manifest URL (useful for diagnostics).
 @property (nonatomic, copy, readonly, nullable) NSString *manifestURL;
+/// HTTPS liveness URL. The app fetches it with the system trust store
+/// before opening `installURL`, so a listener, identity, or trust
+/// problem surfaces as an explainable state instead of iOS silently
+/// ignoring the install link.
+@property (nonatomic, copy, readonly, nullable) NSString *pingURL;
 /// Plain HTTP landing page. Open it in Safari on the device to install the
 /// root certificate and start the installation.
 @property (nonatomic, copy, readonly, nullable) NSString *pageURL;

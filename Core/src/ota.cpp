@@ -504,6 +504,10 @@ std::string OtaRouter::install_url() const {
   return build_itms_services_url(manifest_url());
 }
 
+std::string OtaRouter::ping_url() const {
+  return base_url_ + routes_.ping;
+}
+
 HttpServerResponse OtaRouter::error_response(int status,
                                              std::string message) const {
   HttpServerResponse response;

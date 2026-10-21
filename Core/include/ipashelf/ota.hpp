@@ -188,6 +188,11 @@ class OtaRouter {
 
   [[nodiscard]] std::string manifest_url() const;
   [[nodiscard]] std::string install_url() const;
+  /// Liveness endpoint. The app fetches it over HTTPS with the system
+  /// trust store before opening the install link, proving the listener,
+  /// the TLS identity and the root trust the way `installd` will see
+  /// them.
+  [[nodiscard]] std::string ping_url() const;
   [[nodiscard]] const std::string& base_url() const { return base_url_; }
   [[nodiscard]] const OtaPackage& package() const { return package_; }
   [[nodiscard]] const OtaRoutes& routes() const { return routes_; }

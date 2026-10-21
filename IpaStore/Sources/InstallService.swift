@@ -18,6 +18,7 @@ final class InstallService {
     var phase: InstallPhase = .idle
     var message: String = ""
     var installURL: URL?
+    var pingURL: URL?
     var pageURL: URL?
     var profileURL: URL?
     var certificateFingerprint: String = ""
@@ -61,6 +62,7 @@ final class InstallService {
             return
         }
         installURL = server.installURL.flatMap(URL.init(string:))
+        pingURL = server.pingURL.flatMap(URL.init(string:))
         pageURL = server.pageURL.flatMap(URL.init(string:))
         profileURL = server.profileURL.flatMap(URL.init(string:))
         certificateFingerprint = server.certificate?.sha256Fingerprint ?? ""
@@ -103,12 +105,58 @@ final class InstallService {
 
     /// Opens the `itms-services` link so iOS fetches the manifest and asks
     /// the user to confirm the installation.
+    ///
+    /// The link is only opened after the app has fetched `/ping` from its
+    /// own HTTPS listener using the system trust store. That one request
+    /// proves end-to-end what `installd` will do seconds later — listener
+    /// reachable, TLS identity sane, root certificate trusted — and turns
+    /// the otherwise silent no-op (an untrusted certificate makes iOS
+    /// ignore the link without any message) into a state the sheet can
+    /// explain and guide.
     func openInstallURL() {
         guard let installURL else { return }
         // Begun here, in the foreground: installd fetches from this process
         // while the user is looking at the system prompt.
         beginBackgroundAssertion()
-        UIApplication.shared.open(installURL)
+        guard let pingURL else {
+            UIApplication.shared.open(installURL)
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                var request = URLRequest(url: pingURL)
+                request.timeoutInterval = 4
+                request.cachePolicy = .reloadIgnoringLocalCacheData
+                let (_, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse,
+                      http.statusCode == 200 else {
+                    phase = .failed(String(localized: "The install server answered with an unexpected response."))
+                    return
+                }
+                UIApplication.shared.open(installURL)
+            } catch let error as URLError where Self.isCertificateError(error) {
+                // The static trust check passed but TLS disagrees (the
+                // trust toggle was just turned off, or the leaf no longer
+                // chains to the installed root): show the certificate
+                // setup steps again instead of opening a link iOS would
+                // silently ignore.
+                rootCertificateTrusted = false
+            } catch {
+                phase = .failed(String(localized: "The install server did not respond on this device: \(error.localizedDescription)"))
+            }
+        }
+    }
+
+    private static func isCertificateError(_ error: URLError) -> Bool {
+        switch error.code {
+        case .serverCertificateUntrusted, .serverCertificateHasBadDate,
+             .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid,
+             .secureConnectionFailed:
+            return true
+        default:
+            return false
+        }
     }
 
     func stop() {
@@ -120,6 +168,7 @@ final class InstallService {
             phase = .stopped
         }
         installURL = nil
+        pingURL = nil
         pageURL = nil
         profileURL = nil
     }
