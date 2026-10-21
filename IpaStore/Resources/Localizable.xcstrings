@@ -661,6 +661,17 @@
         }
       }
     },
+    "Delivered": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "転送完了"
+          }
+        }
+      }
+    },
     "Delete": {
       "extractionState": "manual",
       "localizations": {
@@ -1328,17 +1339,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Keychainの保存内容が削除されます。ダウンロード済みパッケージは残ります。"
-          }
-        }
-      }
-    },
-    "Keep IPAShelf open until iOS finishes downloading the package. The app icon appears on the Home Screen while it installs.": {
-      "extractionState": "manual",
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "iOSのパッケージダウンロードが終わるまでIPAShelfを開いたままにしてください。インストール中はホーム画面にアイコンが表示されます。"
           }
         }
       }
@@ -2608,6 +2608,17 @@
         }
       }
     },
+    "Stop the Install Server": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "インストールサーバーを停止"
+          }
+        }
+      }
+    },
     "Stopped": {
       "extractionState": "manual",
       "localizations": {
@@ -3055,6 +3066,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "はい"
+          }
+        }
+      }
+    },
+    "You can leave this sheet and watch progress on the Home Screen — the server keeps running in the background. Just don't quit IPAShelf until the icon finishes installing.": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この画面を閉じて、ホーム画面で進行状況を見ても構いません。サーバーはバックグラウンドで動作し続けます。アイコンのインストールが終わるまではIPAShelfを終了しないでください。"
           }
         }
       }

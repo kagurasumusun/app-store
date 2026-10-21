@@ -27,6 +27,9 @@ typedef NS_ENUM(NSInteger, IPInstallServerState) {
   IPInstallServerStateWaiting,
   /// The device is downloading the payload.
   IPInstallServerStateSending,
+  /// The device received the complete payload and closed the transfer;
+  /// installation itself continues under iOS.
+  IPInstallServerStateSent,
   IPInstallServerStateFailed,
   IPInstallServerStateStopped,
 };

@@ -598,6 +598,9 @@ enum InstallPhase: Equatable {
     case preparing
     case ready
     case sending(Double)
+    /// The device confirmed receipt of the complete package; iOS is
+    /// installing it now. This is NOT "installed" — the server stays up.
+    case sent
     case failed(String)
     case stopped
 
@@ -607,6 +610,7 @@ enum InstallPhase: Equatable {
         case .preparing: return String(localized: "Preparing")
         case .ready: return String(localized: "Ready to install")
         case .sending(let progress): return String(localized: "Sending… \(Int(progress * 100))%")
+        case .sent: return String(localized: "Delivered")
         case .failed: return String(localized: "Installation failed")
         case .stopped: return String(localized: "Stopped")
         }
@@ -614,7 +618,7 @@ enum InstallPhase: Equatable {
 
     var isBusy: Bool {
         switch self {
-        case .preparing, .ready, .sending: return true
+        case .preparing, .ready, .sending, .sent: return true
         default: return false
         }
     }

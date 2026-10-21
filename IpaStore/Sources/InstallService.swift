@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+import AVFoundation
 import Foundation
 import Observation
 import UIKit
@@ -40,6 +41,7 @@ final class InstallService {
     @ObservationIgnored private var server: IPInstallServer?
     @ObservationIgnored private var certificateServer: IPInstallCertificateServer?
     @ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    @ObservationIgnored private let keepAlive = InstallKeepAlive()
 
     var certificateFingerprintShort: String {
         guard certificateFingerprint.count > 23 else { return certificateFingerprint }
@@ -51,6 +53,11 @@ final class InstallService {
     // MARK: Installation
 
     func start(item: LibraryItem) {
+        if server != nil, self.item?.id == item.id {
+            // Re-presenting the sheet for the same package: the server
+            // and any transfer in flight stay exactly as they are.
+            return
+        }
         stop()
         self.item = item
         phase = .preparing
@@ -89,6 +96,10 @@ final class InstallService {
         }
         phase = .ready
         message = "Waiting for the device"
+        // The transfer happens while the user is on the Home Screen
+        // watching the icon fill in; hold the process open for it.
+        keepAlive.start()
+        noteDiagnostic("Keeping the app awake while the server runs")
     }
 
     private func makeServer(for item: LibraryItem) -> IPInstallServer {
@@ -112,6 +123,8 @@ final class InstallService {
             phase = .ready
         case .sending:
             phase = .sending(progress)
+        case .sent:
+            phase = .sent
         case .failed:
             phase = .failed(message.isEmpty ? "The install server stopped." : message)
         case .stopped:
@@ -209,6 +222,7 @@ final class InstallService {
 
     func stop() {
         endBackgroundAssertion()
+        keepAlive.stop()
         server?.stop()
         server = nil
         if case .failed = phase { return }
@@ -335,4 +349,68 @@ final class InstallService {
         UIApplication.shared.endBackgroundTask(backgroundTask)
         backgroundTask = .invalid
     }
+}
+
+/// Keeps the process runnable while iOS downloads the package from the
+/// local server.
+///
+/// Once the user confirms the system prompt they typically watch the app
+/// icon fill in on the Home Screen, so this app is in the background for
+/// most of the transfer. A background-task assertion alone is a short,
+/// system-sized window that a large package can outlast; inaudible
+/// looping audio in a mixing playback session holds execution for as
+/// long as the server is up, without disturbing other apps' audio.
+private final class InstallKeepAlive {
+    private var player: AVAudioPlayer?
+
+    func start() {
+        guard player == nil else { return }
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default,
+                                    options: [.mixWithOthers])
+            try session.setActive(true)
+            let player = try AVAudioPlayer(data: Self.silence)
+            player.numberOfLoops = -1
+            player.volume = 0
+            player.play()
+            self.player = player
+        } catch {
+            // Best effort — the background-task assertion still applies.
+        }
+    }
+
+    func stop() {
+        player?.stop()
+        player = nil
+        try? AVAudioSession.sharedInstance().setActive(
+            false, options: [.notifyOthersOnDeactivation])
+    }
+
+    /// One second of silent PCM in a minimal WAV container, built in
+    /// memory so the app ships no audio asset for this.
+    private static let silence: Data = {
+        let sampleRate = 8000
+        let byteCount = sampleRate * 2  // mono, 16-bit samples
+        var data = Data()
+        func appendLE<T: FixedWidthInteger>(_ value: T) {
+            var little = value.littleEndian
+            withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+        }
+        data.append(contentsOf: [UInt8]("RIFF".utf8))
+        appendLE(UInt32(36 + byteCount))
+        data.append(contentsOf: [UInt8]("WAVE".utf8))
+        data.append(contentsOf: [UInt8]("fmt ".utf8))
+        appendLE(UInt32(16))              // fmt chunk size
+        appendLE(UInt16(1))               // PCM
+        appendLE(UInt16(1))               // channels
+        appendLE(UInt32(sampleRate))
+        appendLE(UInt32(sampleRate * 2))  // byte rate
+        appendLE(UInt16(2))               // block align
+        appendLE(UInt16(16))              // bits per sample
+        data.append(contentsOf: [UInt8]("data".utf8))
+        appendLE(UInt32(byteCount))
+        data.append(Data(count: byteCount))
+        return data
+    }()
 }

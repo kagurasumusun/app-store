@@ -653,6 +653,10 @@ NSString *IPFingerprint(NSData *der) {
 + (nullable IPInstallCertificate *)prepareCertificateWithError:
     (NSError *_Nullable *_Nullable)error;
 - (void)notePayloadProgress:(double)fraction message:(NSString *)message;
+- (void)notePayloadCompleted:(BOOL)success
+                   transferred:(unsigned long long)transferred
+                            of:(unsigned long long)total;
+- (BOOL)isPayloadFile:(NSString *)path;
 - (void)noteActivity:(NSString *)line;
 - (void)unpublishInstallHost;
 - (void)connectionDidFinish:(IPInstallConnection *)connection;
@@ -668,8 +672,16 @@ struct ConnectionState {
   std::shared_ptr<std::ifstream> file;
   std::uint64_t fileTotal = 0;
   std::uint64_t fileSent = 0;
+  // Bytes the transport confirmed handing off, as opposed to bytes merely
+  // queued: progress and transfer outcome are judged on this counter.
+  std::uint64_t fileFlushed = 0;
   std::string head;
   bool finished = false;
+  // The package payload drives the server's user-visible outcome; other
+  // responses (manifest, icons, pages) close quietly.
+  bool sendsPayload = false;
+  bool finalSent = false;
+  bool payloadSettled = false;
 };
 
 }  // namespace
@@ -821,6 +833,10 @@ struct ConnectionState {
     _state->file->seekg(static_cast<std::streamoff>(response.file_offset));
     _state->fileTotal = response.file_length;
     _state->fileSent = 0;
+    _state->fileFlushed = 0;
+    _state->sendsPayload = [_server
+        isPayloadFile:[NSString
+                          stringWithUTF8String:response.file_path.c_str()]];
     if (![self sendString:_state->head]) return;
     [self sendNextChunk];
     return;
@@ -868,11 +884,7 @@ struct ConnectionState {
   NSData *data = [NSData dataWithBytes:buffer.data()
                                 length:static_cast<NSUInteger>(read)];
   _state->fileSent += static_cast<std::uint64_t>(read);
-  const double fraction = _state->fileTotal == 0
-                              ? 0
-                              : static_cast<double>(_state->fileSent) /
-                                    static_cast<double>(_state->fileTotal);
-  [_server notePayloadProgress:fraction message:nil];
+  const std::uint64_t chunk = static_cast<std::uint64_t>(read);
   __weak IPInstallConnection *weakSelf = self;
   dispatch_data_t payload = dispatch_data_create(
       data.bytes, data.length,
@@ -885,11 +897,36 @@ struct ConnectionState {
         IPInstallConnection *strongSelf = weakSelf;
         if (strongSelf == nil) return;
         if (error != nil) {
+          [strongSelf settlePayload:NO];
           [strongSelf finish];
-        } else {
-          [strongSelf sendNextChunk];
+          return;
         }
+        // Progress counts what the transport has actually taken, and
+        // stays below 100% until the peer confirms the whole body by
+        // closing its side — being queued locally is not being received.
+        strongSelf->_state->fileFlushed += chunk;
+        if (strongSelf->_state->sendsPayload &&
+            strongSelf->_state->fileTotal > 0) {
+          const double fraction =
+              static_cast<double>(strongSelf->_state->fileFlushed) /
+              static_cast<double>(strongSelf->_state->fileTotal);
+          [strongSelf->_server
+              notePayloadProgress:std::min(fraction, 0.99)
+                            message:nil];
+        }
+        [strongSelf sendNextChunk];
       });
+}
+
+// Reports the payload outcome to the server exactly once. Success means
+// every byte was flushed and the closing handshake saw the peer finish;
+// anything less is an interrupted transfer.
+- (void)settlePayload:(BOOL)success {
+  if (!_state->sendsPayload || _state->payloadSettled) return;
+  _state->payloadSettled = true;
+  [_server notePayloadCompleted:success
+                     transferred:_state->fileFlushed
+                              of:_state->fileTotal];
 }
 
 - (void)finishSending {
@@ -899,10 +936,67 @@ struct ConnectionState {
   nw_connection_send(_connection, NULL,
                      NW_CONNECTION_DEFAULT_STREAM_CONTEXT, true,
                      ^(nw_error_t error) {
-                       (void)error;
                        IPInstallConnection *strongSelf = weakSelf;
-                       if (strongSelf != nil) [strongSelf finish];
+                       if (strongSelf == nil) return;
+                       if (error != nil) {
+                         [strongSelf settlePayload:NO];
+                         [strongSelf finish];
+                         return;
+                       }
+                       strongSelf->_state->finalSent = true;
+                       // Half-close only. Cancelling here — the moment
+                       // the final bytes enter the transport — aborts
+                       // the connection and can make the peer discard
+                       // whatever it has buffered but not yet read,
+                       // which truncates large payloads a slow reader
+                       // is still draining. Wait for the peer to close
+                       // its side instead; that is also the only proof
+                       // it actually received the whole body.
+                       [strongSelf drainUntilPeerClose];
+                       [strongSelf armDrainTimeout];
                      });
+}
+
+- (void)drainUntilPeerClose {
+  if (_cancelled) return;
+  __weak IPInstallConnection *weakSelf = self;
+  nw_connection_receive(
+      _connection, 1, 64 * 1024,
+      ^(dispatch_data_t content, nw_content_context_t context,
+        bool is_complete, nw_error_t error) {
+        IPInstallConnection *strongSelf = weakSelf;
+        if (strongSelf == nil) return;
+        (void)content;
+        (void)context;
+        if (is_complete || error != nil) {
+          const bool delivered =
+              strongSelf->_state->finalSent &&
+              strongSelf->_state->fileFlushed >=
+                  strongSelf->_state->fileTotal;
+          [strongSelf settlePayload:delivered ? YES : NO];
+          [strongSelf finish];
+          return;
+        }
+        [strongSelf drainUntilPeerClose];
+      });
+}
+
+- (void)armDrainTimeout {
+  __weak IPInstallConnection *weakSelf = self;
+  dispatch_after(
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)),
+      dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        IPInstallConnection *strongSelf = weakSelf;
+        if (strongSelf == nil || strongSelf->_cancelled) return;
+        // The peer is holding the connection open past the end of the
+        // body. Everything was flushed and our FIN is out, so the
+        // transfer counts as delivered; close out locally.
+        const bool delivered =
+            strongSelf->_state->finalSent &&
+            strongSelf->_state->fileFlushed >= strongSelf->_state->fileTotal;
+        [strongSelf settlePayload:delivered ? YES : NO];
+        [strongSelf finish];
+      });
 }
 
 - (void)sendBytes:(const std::string &)text
@@ -935,6 +1029,9 @@ struct ConnectionState {
 - (void)finish {
   if (_cancelled) return;
   _cancelled = true;
+  // A connection reaching here without settling its payload ended early
+  // (peer vanished, TLS failure, explicit cancel).
+  [self settlePayload:NO];
   nw_connection_cancel(_connection);
   [_server connectionDidFinish:self];
 }
@@ -1754,6 +1851,31 @@ struct ConnectionState {
   [self setState:IPInstallServerStateSending
         progress:fraction
          message:message ?: @"Sending the package"];
+}
+
+- (void)notePayloadCompleted:(BOOL)success
+                   transferred:(unsigned long long)transferred
+                            of:(unsigned long long)total {
+  if (success) {
+    [self noteActivity:[NSString stringWithFormat:
+                                      @"Payload delivered (%llu bytes)",
+                                      total]];
+    [self setState:IPInstallServerStateSent
+          progress:1.0
+           message:@"Sent — iOS is installing"];
+  } else {
+    [self noteActivity:[NSString stringWithFormat:
+                                      @"Payload transfer interrupted "
+                                      @"(%llu of %llu bytes)",
+                                      transferred, total]];
+    [self setState:IPInstallServerStateFailed
+          progress:0
+           message:@"The package transfer was interrupted"];
+  }
+}
+
+- (BOOL)isPayloadFile:(NSString *)path {
+  return path != nil && _ipaPath != nil && [path isEqualToString:_ipaPath];
 }
 
 - (void)reportFailure:(NSError *)error {

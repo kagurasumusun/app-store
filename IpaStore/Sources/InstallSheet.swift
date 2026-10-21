@@ -22,7 +22,7 @@ struct InstallSheet: View {
                     statusBlock
                     stepsCard
                     primaryAction
-                    Text("Keep IPAShelf open until iOS finishes downloading the package. The app icon appears on the Home Screen while it installs.")
+                    Text("You can leave this sheet and watch progress on the Home Screen — the server keeps running in the background. Just don't quit IPAShelf until the icon finishes installing.")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -37,7 +37,10 @@ struct InstallSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") {
-                        service.stop()
+                        // The server intentionally outlives the sheet
+                        // while a transfer is running; stopping it is
+                        // the explicit action at the bottom.
+                        if !isSending { service.stop() }
                         dismiss()
                     }
                 }
@@ -61,7 +64,6 @@ struct InstallSheet: View {
             }
         }
         .presentationDetents([.large])
-        .onDisappear { service.stop() }
         .sensoryFeedback(.success, trigger: sentFully)
     }
 
@@ -137,11 +139,11 @@ struct InstallSheet: View {
                     .padding(.bottom, 14)
             }
             Divider().padding(.leading, 44)
-            stepRow(state: sentFully ? .done : (serverReady && trusted ? .active : .pending),
+            stepRow(state: (sentFully || isSending) ? .done : (serverReady && trusted ? .active : .pending),
                     title: String(localized: "Confirm the system install prompt"),
                     subtitle: nil)
             Divider().padding(.leading, 44)
-            stepRow(state: sentFully ? .done : .pending,
+            stepRow(state: sentFully ? .done : (isSending ? .active : .pending),
                     title: String(localized: "iOS downloads and installs the app"),
                     subtitle: sentFully ? String(localized: "Check the Home Screen") : nil)
         }
@@ -257,12 +259,12 @@ struct InstallSheet: View {
 
     @ViewBuilder
     private var primaryAction: some View {
-        if service.phase == .ready || isSending {
+        if service.phase == .ready || isSending || sentFully {
             VStack(spacing: 12) {
                 Button {
                     service.openInstallURL()
                 } label: {
-                    Label(isSending
+                    Label((isSending || sentFully)
                           ? String(localized: "Open the Install Prompt Again")
                           : String(localized: "Install"),
                           systemImage: "arrow.down.app")
@@ -294,6 +296,14 @@ struct InstallSheet: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
+                Button(role: .destructive) {
+                    service.stop()
+                    dismiss()
+                } label: {
+                    Text("Stop the Install Server")
+                        .font(.system(size: 14, weight: .medium))
+                }
+                .buttonStyle(.plain)
             }
         } else if case .failed = service.phase, let item = service.item {
             Button {
@@ -317,16 +327,18 @@ struct InstallSheet: View {
     }
 
     private var serverReady: Bool {
-        service.phase == .ready || isSending
+        service.phase == .ready || isSending || sentFully
     }
 
     private var trusted: Bool {
         service.rootCertificateTrusted == true
     }
 
+    /// True only once the device confirmed it received the complete
+    /// package (the server's `.sent` state). Send progress alone never
+    /// implies delivery — bytes can sit in local buffers.
     private var sentFully: Bool {
-        if case .sending(let progress) = service.phase { return progress >= 1 }
-        return false
+        service.phase == .sent
     }
 
     private var statusText: String {
@@ -337,10 +349,10 @@ struct InstallSheet: View {
             return String(localized: "One more step: trust the certificate")
         case .ready:
             return String(localized: "Ready to Install")
-        case .sending(let progress) where progress >= 1:
-            return String(localized: "Sent — iOS is installing")
         case .sending:
             return String(localized: "Sending to iOS…")
+        case .sent:
+            return String(localized: "Sent — iOS is installing")
         case .failed:
             return String(localized: "Installation Failed")
         case .idle, .stopped:
@@ -353,6 +365,7 @@ struct InstallSheet: View {
         case .preparing: return "gearshape.2"
         case .ready: return "arrow.down.app"
         case .sending: return "paperplane.fill"
+        case .sent: return "checkmark.circle.fill"
         case .failed: return "exclamationmark.triangle.fill"
         case .idle, .stopped: return "app.dashed"
         }
@@ -362,7 +375,7 @@ struct InstallSheet: View {
         switch service.phase {
         case .failed: return .red
         case .idle, .stopped: return .secondary
-        case .sending(let progress) where progress >= 1: return .green
+        case .sent: return .green
         default: return theme.accentColor
         }
     }
