@@ -27,6 +27,7 @@ struct InstallSheet: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 12)
+                    diagnosticsFootnote
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 20)
@@ -223,24 +224,77 @@ struct InstallSheet: View {
         }
     }
 
+    // MARK: Diagnostics
+
+    /// The server's recent activity, verbatim. iOS reports every
+    /// installation failure as the same opaque alert, so this is the one
+    /// place that shows what actually happened on the wire.
+    @ViewBuilder
+    private var diagnosticsFootnote: some View {
+        if !service.diagnosticLines.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Server Activity")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                ForEach(Array(service.diagnosticLines.enumerated()), id: \.offset) { _, line in
+                    Text(line)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(.tertiarySystemBackground))
+            }
+        }
+    }
+
     // MARK: Primary action
 
     @ViewBuilder
     private var primaryAction: some View {
         if service.phase == .ready || isSending {
-            Button {
-                service.openInstallURL()
-            } label: {
-                Label(isSending
-                      ? String(localized: "Open the Install Prompt Again")
-                      : String(localized: "Install"),
-                      systemImage: "arrow.down.app")
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(maxWidth: .infinity)
+            VStack(spacing: 12) {
+                Button {
+                    service.openInstallURL()
+                } label: {
+                    Label(isSending
+                          ? String(localized: "Open the Install Prompt Again")
+                          : String(localized: "Install"),
+                          systemImage: "arrow.down.app")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                .controlSize(.large)
+                if let pageURL = service.pageURL {
+                    // The classic path: the same server hosts a small web
+                    // page whose Install link Safari hands to iOS. Kept as
+                    // a fallback for when opening the prompt from inside
+                    // the app does not take.
+                    Button {
+                        service.beginBackgroundAssertion()
+                        UIApplication.shared.open(pageURL)
+                    } label: {
+                        Label(String(localized: "Open the Install Page Instead"),
+                              systemImage: "safari")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.large)
+                    Text("If the system prompt does not appear, open the install page in Safari and tap Install there.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .buttonBorderShape(.capsule)
-            .controlSize(.large)
         } else if case .failed = service.phase, let item = service.item {
             Button {
                 model.install(item)

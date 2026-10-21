@@ -511,6 +511,7 @@ NSString *IPFingerprint(NSData *der) {
 + (nullable IPInstallCertificate *)prepareCertificateWithError:
     (NSError *_Nullable *_Nullable)error;
 - (void)notePayloadProgress:(double)fraction message:(NSString *)message;
+- (void)noteActivity:(NSString *)line;
 - (void)connectionDidFinish:(IPInstallConnection *)connection;
 - (void)reportFailure:(NSError *)error;
 @end
@@ -566,8 +567,24 @@ struct ConnectionState {
   __weak IPInstallConnection *weakSelf = self;
   nw_connection_set_state_changed_handler(
       _connection, ^(nw_connection_state_t state, nw_error_t error) {
-        if (state == nw_connection_state_failed ||
-            state == nw_connection_state_cancelled) {
+        if (state == nw_connection_state_failed) {
+          // Domain: 1 = POSIX, 2 = DNS, 3 = TLS. A TLS-domain failure
+          // here with the peer gone means the client rejected what the
+          // listener presented — exactly the situation SpringBoard
+          // reports to the user as a bare "cannot connect".
+          IPInstallConnection *strongSelf = weakSelf;
+          if (error != NULL) {
+            [strongSelf->_server
+                noteActivity:[NSString stringWithFormat:
+                                           @"TLS connection failed (network "
+                                           @"error domain %d, code %d)",
+                                           (int)nw_error_get_error_domain(error),
+                                           nw_error_get_error_code(error)]];
+          } else {
+            [strongSelf->_server noteActivity:@"TLS connection failed"];
+          }
+          [strongSelf finish];
+        } else if (state == nw_connection_state_cancelled) {
           [weakSelf finish];
         }
       });
@@ -623,8 +640,28 @@ struct ConnectionState {
   if (complete && _state->stream->buffered() == 0) {
     // No more bytes are coming; the request is still complete.
   }
+  if (!_router) {
+    // The router is created after the listener reports ready (it needs
+    // the port), so a connection can in principle land before it exists.
+    [self sendBytes:("HTTP/1.1 503 Service Unavailable\r\n"
+                     "Content-Length: 0\r\nConnection: close\r\n\r\n")
+        isComplete:false
+        thenFinish:YES];
+    return;
+  }
   const ipashelf::HttpServerResponse response =
       _router->route(request.value().value());
+  [_server noteActivity:[NSString
+                            stringWithFormat:@"%@ %@ → %d",
+                                             [NSString stringWithUTF8String:
+                                                           request.value()
+                                                               .value()
+                                                               .method.c_str()],
+                                             [NSString stringWithUTF8String:
+                                                           request.value()
+                                                               .value()
+                                                               .path.c_str()],
+                                             response.status]];
   _state->head = response.head(
       ipashelf::format_http_date(std::time(nullptr)));
   if (response.head_only) {
@@ -799,6 +836,9 @@ struct ConnectionState {
   int _tlsPort;
   NSString *_host;
   NSString *_caPath;
+  NSData *_caCertificateDER;
+  NSData *_leafCertificateDER;
+  std::atomic<int> _acceptedConnections;
 
   NSMutableSet<IPInstallConnection *> *_connections;
 
@@ -825,6 +865,7 @@ struct ConnectionState {
     _tlsPort = 0;
     _state = IPInstallServerStateIdle;
     _stopping.store(false);
+    _acceptedConnections.store(0);
   }
   return self;
 }
@@ -1000,6 +1041,7 @@ struct ConnectionState {
     return NO;
   }
   _certificate = certificate;
+  _caCertificateDER = certificate.der;
   _caPath = [IPCertificateDirectory()
       stringByAppendingPathComponent:@"root-ca.der"];
 
@@ -1052,8 +1094,12 @@ struct ConnectionState {
   // stale duplicate makes the identity lookup below fail — one stable
   // leaf, replaced only when it no longer validates, avoids that class
   // of startup failure entirely.
+  // "v2": leaves before this marker lacked a dNSName SAN for the literal
+  // 127.0.0.1. The reuse gate below only checks the usual SSL policy
+  // (which accepts the iPAddress SAN), so an old leaf would be kept and
+  // the new SAN would never land; the new file name forces one rebuild.
   NSString *leafPath = [IPCertificateDirectory()
-      stringByAppendingPathComponent:@"leaf.der"];
+      stringByAppendingPathComponent:@"leaf-v2.der"];
   NSData *leafCertificate = nil;
   {
     NSData *savedLeaf = [NSData dataWithContentsOfFile:leafPath];
@@ -1089,13 +1135,23 @@ struct ConnectionState {
     // server never started at all.
     options.issuer.common_name = "IPAShelf Root CA";
     options.issuer.organization = "IPAShelf";
-    options.serial = 2;
+    // Serial moved with the SAN set below; the keychain certificate item
+    // for the old leaf has the same (issuer, serial) otherwise.
+    options.serial = 3;
     options.not_before = std::time(nullptr) - 24 * 60 * 60;
     options.validity_seconds = 2ULL * 365 * 24 * 60 * 60;
     options.alt_names.push_back(
         ipashelf::SubjectAltName{"localhost", std::nullopt});
     options.alt_names.push_back(
         ipashelf::SubjectAltName{"ipashelf.local", std::nullopt});
+    // The advertised host is the literal 127.0.0.1. Verifiers are
+    // supposed to match IP literals against iPAddress SANs (added for
+    // every local address below), but the OTA manifest fetcher is its
+    // own TLS stack and has historically been pickier than the
+    // URLSession one; a dNSName carrying the same literal covers
+    // verifiers that string-match the host against dNSName entries.
+    options.alt_names.push_back(
+        ipashelf::SubjectAltName{"127.0.0.1", std::nullopt});
     for (const auto &address : IPLocalIPv4Bytes()) {
       options.alt_names.push_back(ipashelf::SubjectAltName{"", address});
     }
@@ -1142,6 +1198,7 @@ struct ConnectionState {
     CFRelease(caKey);
   }
   IPAddCertificateToKeychain(leafCertificate, @"IPAShelf Install Leaf");
+  _leafCertificateDER = leafCertificate;
   OSStatus identityStatus = errSecSuccess;
   _identity = IPCopyIdentityForKeyAndCertificate(leafKey, leafCertificate,
                                                  &identityStatus);
@@ -1191,6 +1248,8 @@ struct ConnectionState {
   // Network.framework hands TLS options to a configure block; the older
   // nw_tls_create_options() convenience is not part of the iOS 27 headers.
   SecIdentityRef identity = _identity;
+  NSData *leafDER = _leafCertificateDER;
+  NSData *caDER = _caCertificateDER;
   nw_parameters_t parameters = nw_parameters_create_secure_tcp(
       ^(nw_protocol_options_t tlsOptions) {
         sec_protocol_options_t tls =
@@ -1198,7 +1257,32 @@ struct ConnectionState {
         if (tls == nil) {
           return;
         }
-        sec_identity_t secIdentity = sec_identity_create(identity);
+        // Present the full chain — leaf plus issuing CA — explicitly.
+        // With a bare identity the presented chain is whatever the
+        // system assembles from this app's keychain, and the OTA
+        // manifest fetcher (itunesstored) does not chase or synthesize
+        // missing issuers the way URLSession/Safari do: an incomplete
+        // chain there surfaces only as SpringBoard's generic
+        // "cannot connect to 127.0.0.1" alert even though the app's own
+        // HTTPS probe against the same listener succeeds. Handing the
+        // fetcher the exact chain removes that difference entirely.
+        sec_identity_t secIdentity = nil;
+        SecCertificateRef leaf = SecCertificateCreateWithData(
+            kCFAllocatorDefault, (__bridge CFDataRef)leafDER);
+        SecCertificateRef ca = SecCertificateCreateWithData(
+            kCFAllocatorDefault, (__bridge CFDataRef)caDER);
+        if (leaf != NULL && ca != NULL) {
+          NSArray *chain = @[
+            (__bridge id)leaf, (__bridge id)ca
+          ];
+          secIdentity = sec_identity_create_with_certificates(
+              identity, (__bridge CFArrayRef)chain);
+        }
+        if (leaf != NULL) CFRelease(leaf);
+        if (ca != NULL) CFRelease(ca);
+        if (secIdentity == nil) {
+          secIdentity = sec_identity_create(identity);
+        }
         if (secIdentity != nil) {
           // sec_identity_t and sec_protocol_options_t are ARC-managed
           // objects, so no CFRelease is needed here.
@@ -1407,6 +1491,9 @@ struct ConnectionState {
     nw_connection_cancel(connection);
     return;
   }
+  const int accepted = _acceptedConnections.fetch_add(1) + 1;
+  [self noteActivity:[NSString stringWithFormat:
+                                    @"TLS connection #%d accepted", accepted]];
   IPInstallConnection *handler =
       [[IPInstallConnection alloc] initWithConnection:connection
                                               router:_router
@@ -1418,6 +1505,17 @@ struct ConnectionState {
 - (void)connectionDidFinish:(IPInstallConnection *)connection {
   dispatch_async(_tlsQueue, ^{
     [self->_connections removeObject:connection];
+  });
+}
+
+- (void)noteActivity:(NSString *)line {
+  // Always keep the evidence in the unified log as well; the handler is
+  // only attached while the install sheet is up.
+  NSLog(@"IPAShelf install server: %@", line);
+  void (^handler)(NSString *) = _activityHandler;
+  if (handler == nil) return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    handler(line);
   });
 }
 

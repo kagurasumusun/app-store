@@ -86,6 +86,14 @@ typedef NS_ENUM(NSInteger, IPInstallServerState) {
 @property (nonatomic, copy, nullable) void (^stateHandler)(
     IPInstallServerState state, double progress, NSString *message);
 
+/// Called on the main queue with one-line diagnostic events (accepted
+/// connections, served paths, TLS/network errors). When installation
+/// fails, this is how the UI can tell whether the device connected at
+/// all, whether TLS negotiation broke, and which resource was fetched —
+/// instead of leaving SpringBoard's generic "cannot connect" alert as
+/// the only evidence.
+@property (nonatomic, copy, nullable) void (^activityHandler)(NSString *line);
+
 /// Starts the TLS listener and the plain-HTTP certificate page.
 /// Returns `NO` when it fails; `startupError` then explains why.
 - (BOOL)start;

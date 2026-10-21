@@ -18,8 +18,15 @@ final class InstallService {
     var phase: InstallPhase = .idle
     var message: String = ""
     var installURL: URL?
+    var manifestURL: URL?
     var pingURL: URL?
     var pageURL: URL?
+    /// Recent server activity (connections, served paths, TLS errors,
+    /// self-test results), newest last, capped so the sheet can show it
+    /// as a footnote. When installation fails this is what separates
+    /// "the device never connected" from "TLS broke" from "iOS fetched
+    /// the manifest fine and failed later".
+    var diagnosticLines: [String] = []
     var profileURL: URL?
     var certificateFingerprint: String = ""
     var certificateError: String?
@@ -49,6 +56,7 @@ final class InstallService {
         phase = .preparing
         message = "Preparing the local install server…"
 
+        diagnosticLines = []
         let server = makeServer(for: item)
         self.server = server
         server.stateHandler = { [weak self] state, progress, message in
@@ -56,16 +64,23 @@ final class InstallService {
                 self?.apply(state: state, progress: progress, message: message)
             }
         }
+        server.activityHandler = { [weak self] line in
+            Task { @MainActor in self?.noteDiagnostic(line) }
+        }
         guard server.start() else {
             phase = .failed(server.startupError.map { StoreError($0).message }
                 ?? "The install server did not start.")
             return
         }
         installURL = server.installURL.flatMap(URL.init(string:))
+        manifestURL = server.manifestURL.flatMap(URL.init(string:))
         pingURL = server.pingURL.flatMap(URL.init(string:))
         pageURL = server.pageURL.flatMap(URL.init(string:))
         profileURL = server.profileURL.flatMap(URL.init(string:))
         certificateFingerprint = server.certificate?.sha256Fingerprint ?? ""
+        if let pingURL {
+            noteDiagnostic("Listening at \(pingURL.absoluteString)")
+        }
         phase = .ready
         message = "Waiting for the device"
     }
@@ -134,6 +149,28 @@ final class InstallService {
                     phase = .failed(String(localized: "The install server answered with an unexpected response."))
                     return
                 }
+                noteDiagnostic("Self-test: /ping OK (TLS trusted)")
+                // Then fetch the manifest itself — the exact resource the
+                // system fetcher needs next. /ping proves the listener
+                // and trust; this additionally proves routing and the
+                // manifest body, so opening the link can only still fail
+                // for reasons specific to that fetcher.
+                if let manifestURL {
+                    var manifestRequest = URLRequest(url: manifestURL)
+                    manifestRequest.timeoutInterval = 4
+                    manifestRequest.cachePolicy = .reloadIgnoringLocalCacheData
+                    let (data, manifestResponse) =
+                        try await URLSession.shared.data(for: manifestRequest)
+                    guard let manifestHTTP = manifestResponse as? HTTPURLResponse,
+                          manifestHTTP.statusCode == 200, !data.isEmpty else {
+                        let code = (manifestResponse as? HTTPURLResponse)?.statusCode ?? -1
+                        noteDiagnostic("Self-test: manifest check failed (HTTP \(code))")
+                        phase = .failed(String(localized: "The install manifest could not be loaded from the local server (HTTP \(code))."))
+                        return
+                    }
+                    noteDiagnostic("Self-test: manifest OK (\(data.count) bytes)")
+                }
+                noteDiagnostic("Opening the system install prompt")
                 // Explicit completion-handler form: in an async context
                 // the iOS 27 SDK otherwise resolves `open` to its async
                 // overload and rejects the un-awaited call.
@@ -147,6 +184,7 @@ final class InstallService {
                 // silently ignore.
                 rootCertificateTrusted = false
             } catch {
+                noteDiagnostic("Self-test failed: \(error.localizedDescription)")
                 phase = .failed(String(localized: "The install server did not respond on this device: \(error.localizedDescription)"))
             }
         }
@@ -172,9 +210,21 @@ final class InstallService {
             phase = .stopped
         }
         installURL = nil
+        manifestURL = nil
         pingURL = nil
         pageURL = nil
         profileURL = nil
+    }
+
+    /// Appends one diagnostic line, timestamped, keeping the most recent
+    /// handful. The sheet renders these verbatim — they are a log, not UI
+    /// copy, so they stay in the server's own wording.
+    private func noteDiagnostic(_ line: String) {
+        let time = Date().formatted(date: .omitted, time: .standard)
+        diagnosticLines.append("\(time)  \(line)")
+        if diagnosticLines.count > 6 {
+            diagnosticLines.removeFirst(diagnosticLines.count - 6)
+        }
     }
 
     // MARK: Root certificate
@@ -259,9 +309,19 @@ final class InstallService {
         guard server != nil || certificateServer != nil,
               backgroundTask == .invalid else { return }
         let identifier = UIApplication.shared.beginBackgroundTask(withName: "IPAShelf.Install") { [weak self] in
-            Task { @MainActor in self?.endBackgroundAssertion() }
+            Task { @MainActor in self?.renewBackgroundAssertion() }
         }
         backgroundTask = identifier == .invalid ? .invalid : identifier
+    }
+
+    /// The system commit is short and the user may still be reading the
+    /// install prompt when it lapses. End the expiring task and ask for
+    /// another window while a server is up; if the system has no more
+    /// time to give, the new task expires immediately and nothing is
+    /// worse than before.
+    private func renewBackgroundAssertion() {
+        endBackgroundAssertion()
+        beginBackgroundAssertion()
     }
 
     func endBackgroundAssertion() {

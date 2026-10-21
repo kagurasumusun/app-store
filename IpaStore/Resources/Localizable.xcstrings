@@ -1156,6 +1156,17 @@
         }
       }
     },
+    "If the system prompt does not appear, open the install page in Safari and tap Install there.": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "システムの確認画面が表示されない場合は、Safari でインストールページを開き、そこからインストールしてください。"
+          }
+        }
+      }
+    },
     "Import": {
       "extractionState": "manual",
       "localizations": {
@@ -1735,6 +1746,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "設定を開く"
+          }
+        }
+      }
+    },
+    "Open the Install Page Instead": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "代わりにインストールページを開く"
           }
         }
       }
@@ -2344,6 +2366,17 @@
         }
       }
     },
+    "Server Activity": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サーバーアクティビティ"
+          }
+        }
+      }
+    },
     "Share": {
       "extractionState": "manual",
       "localizations": {
@@ -2648,6 +2681,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "使用中のアカウントは購入、ダウンロード、購入履歴に使われます。パスワードとトークンはKeychain内に保管されます。"
+          }
+        }
+      }
+    },
+    "The install manifest could not be loaded from the local server (HTTP %lld).": {
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ローカルサーバーからインストール用マニフェストを読み込めませんでした（HTTP %lld）。"
           }
         }
       }
