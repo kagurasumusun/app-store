@@ -9,7 +9,9 @@
 #import <Security/SecProtocolTypes.h>
 
 #include <arpa/inet.h>
+#include <dns_sd.h>
 #include <ifaddrs.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -283,6 +285,145 @@ BOOL IPTrustEvaluates(NSArray<NSData *> *chainDER, NSData *_Nullable anchorDER,
   return ok;
 }
 
+// The host name the OTA manifest/payload URLs carry. On device, the
+// system fetcher never even opened a TCP connection to a manifest URL
+// whose host was the literal 127.0.0.1 (SpringBoard simply reported
+// "cannot connect to 127.0.0.1"), while installers that advertise a
+// host *name* resolving to loopback work. So the server publishes its
+// own `.local` A record pointing at 127.0.0.1 through DNS-SD — the
+// same shape as a public DNS name for loopback, but fully
+// self-contained: mDNSResponder answers lookups for the name on this
+// device without any outside infrastructure. If publication or
+// resolution fails (e.g. local-network permission denied), the caller
+// falls back to the literal address rather than failing to start.
+NSString *const kIPInstallHostName = @"ipashelf-install.local";
+
+// Hand-off box between the registration caller (blocked on the
+// semaphore) and the DNS-SD callback. Both sides hold one reference;
+// the last one out frees it. That keeps a callback arriving after the
+// caller's timeout from writing into a dead stack frame — at worst a
+// dropped callback leaks one tiny box, which beats the alternative.
+struct IPPublishOutcome {
+  dispatch_semaphore_t done;
+  DNSServiceErrorType error = kDNSServiceErr_NoError;
+  std::atomic<int> references{2};
+};
+
+void IPReleasePublishOutcome(IPPublishOutcome *outcome) {
+  if (outcome->references.fetch_sub(1) == 1) {
+    delete outcome;
+  }
+}
+
+void IPPublishRecordCallback(DNSServiceRef sdRef, DNSRecordRef recordRef,
+                             DNSServiceFlags flags,
+                             DNSServiceErrorType errorCode, void *context) {
+  (void)sdRef;
+  (void)recordRef;
+  (void)flags;
+  auto *outcome = static_cast<IPPublishOutcome *>(context);
+  if (outcome != nullptr) {
+    outcome->error = errorCode;
+    dispatch_semaphore_signal(outcome->done);
+    IPReleasePublishOutcome(outcome);
+  }
+}
+
+// Registers kIPInstallHostName → 127.0.0.1 and waits (bounded) for the
+// registration to settle. On success the two handles must be kept and
+// later passed to IPUnpublishInstallHost; on failure both stay NULL.
+bool IPPublishInstallHost(DNSServiceRef *connectionOut,
+                          DNSRecordRef *recordOut,
+                          DNSServiceErrorType *errorOut) {
+  *connectionOut = NULL;
+  *recordOut = NULL;
+  *errorOut = kDNSServiceErr_NoError;
+  DNSServiceRef connection = NULL;
+  DNSServiceErrorType error = DNSServiceCreateConnection(&connection);
+  if (error != kDNSServiceErr_NoError || connection == NULL) {
+    *errorOut = error;
+    return false;
+  }
+  dispatch_queue_t queue = dispatch_queue_create(
+      "com.example.ipastore.install.host", DISPATCH_QUEUE_SERIAL);
+  DNSServiceSetDispatchQueue(connection, queue);
+
+  auto *outcome = new IPPublishOutcome();
+  outcome->done = dispatch_semaphore_create(0);
+  const std::uint8_t address[4] = {127, 0, 0, 1};
+  DNSRecordRef record = NULL;
+  const std::string fullname =
+      std::string(kIPInstallHostName.UTF8String) + ".";
+  error = DNSServiceRegisterRecord(connection, &record,
+                                   kDNSServiceFlagsShared, 0,
+                                   fullname.c_str(), kDNSServiceType_A,
+                                   kDNSServiceClass_IN, 4, address, 0,
+                                   IPPublishRecordCallback, outcome);
+  if (error == kDNSServiceErr_NoError) {
+    const dispatch_time_t deadline =
+        dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC);
+    if (dispatch_semaphore_wait(outcome->done, deadline) != 0) {
+      error = kDNSServiceErr_Timeout;
+    } else {
+      error = outcome->error;
+    }
+    IPReleasePublishOutcome(outcome);
+  } else {
+    delete outcome;
+  }
+  if (error != kDNSServiceErr_NoError) {
+    if (record != NULL) {
+      DNSServiceRemoveRecord(connection, record, 0);
+    }
+    DNSServiceRefDeallocate(connection);
+    *errorOut = error;
+    return false;
+  }
+  *connectionOut = connection;
+  *recordOut = record;
+  return true;
+}
+
+void IPUnpublishInstallHost(DNSServiceRef connection, DNSRecordRef record) {
+  if (connection == NULL) return;
+  if (record != NULL) {
+    DNSServiceRemoveRecord(connection, record, 0);
+  }
+  DNSServiceRefDeallocate(connection);
+}
+
+// Bounded retry loop asking the resolver whether `host` maps to
+// loopback yet. Registration through mDNSResponder is usually visible
+// within a few hundred milliseconds, but probing can lag; the loop
+// absorbs that without stalling startup for long on real failures.
+bool IPHostResolvesToLoopback(NSString *host, int attempts) {
+  for (int attempt = 0; attempt < attempts; ++attempt) {
+    struct addrinfo hints {};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo *result = nullptr;
+    if (getaddrinfo(host.UTF8String, nullptr, &hints, &result) == 0 &&
+        result != nullptr) {
+      bool loopback = false;
+      for (struct addrinfo *entry = result; entry != nullptr;
+           entry = entry->ai_next) {
+        const auto *address =
+            reinterpret_cast<const struct sockaddr_in *>(entry->ai_addr);
+        if (address != nullptr &&
+            ntohl(address->sin_addr.s_addr) == INADDR_LOOPBACK) {
+          loopback = true;
+        }
+      }
+      freeaddrinfo(result);
+      if (loopback) return true;
+    }
+    if (attempt + 1 < attempts) {
+      usleep(150 * 1000);
+    }
+  }
+  return false;
+}
+
 /// Builds an Apple configuration profile that installs the root certificate.
 /// Serialized from genuine plist objects (instead of a hand-formatted XML
 /// template) so the structure cannot drift: the certificate bytes travel in
@@ -512,6 +653,7 @@ NSString *IPFingerprint(NSData *der) {
     (NSError *_Nullable *_Nullable)error;
 - (void)notePayloadProgress:(double)fraction message:(NSString *)message;
 - (void)noteActivity:(NSString *)line;
+- (void)unpublishInstallHost;
 - (void)connectionDidFinish:(IPInstallConnection *)connection;
 - (void)reportFailure:(NSError *)error;
 @end
@@ -840,6 +982,12 @@ struct ConnectionState {
   NSData *_leafCertificateDER;
   std::atomic<int> _acceptedConnections;
 
+  // Host advertised in the TLS (manifest/payload) URLs: the published
+  // `.local` name when available, else the literal loopback address.
+  NSString *_installHost;
+  DNSServiceRef _hostPublisher;
+  DNSRecordRef _hostRecord;
+
   NSMutableSet<IPInstallConnection *> *_connections;
 
   NSTimeInterval _lastProgressReport;
@@ -1094,12 +1242,13 @@ struct ConnectionState {
   // stale duplicate makes the identity lookup below fail — one stable
   // leaf, replaced only when it no longer validates, avoids that class
   // of startup failure entirely.
-  // "v2": leaves before this marker lacked a dNSName SAN for the literal
-  // 127.0.0.1. The reuse gate below only checks the usual SSL policy
-  // (which accepts the iPAddress SAN), so an old leaf would be kept and
-  // the new SAN would never land; the new file name forces one rebuild.
+  // "v3": leaves before this marker lacked the install host name SAN
+  // (`kIPInstallHostName`). The reuse gate below verifies the chain for
+  // both names, so an old leaf would be dropped by that check anyway;
+  // the new file name just skips the doomed parse and makes the
+  // forced rebuild obvious.
   NSString *leafPath = [IPCertificateDirectory()
-      stringByAppendingPathComponent:@"leaf-v2.der"];
+      stringByAppendingPathComponent:@"leaf-v3.der"];
   NSData *leafCertificate = nil;
   {
     NSData *savedLeaf = [NSData dataWithContentsOfFile:leafPath];
@@ -1117,7 +1266,9 @@ struct ConnectionState {
       if (savedCertificate != NULL) {
         if (IPCertificateMatchesKey(savedCertificate, leafKey) &&
             IPTrustEvaluates(@[ savedLeaf, certificate.der ],
-                             certificate.der, @"127.0.0.1", nil)) {
+                             certificate.der, @"127.0.0.1", nil) &&
+            IPTrustEvaluates(@[ savedLeaf, certificate.der ],
+                             certificate.der, kIPInstallHostName, nil)) {
           leafCertificate = savedLeaf;
         }
         CFRelease(savedCertificate);
@@ -1137,19 +1288,25 @@ struct ConnectionState {
     options.issuer.organization = "IPAShelf";
     // Serial moved with the SAN set below; the keychain certificate item
     // for the old leaf has the same (issuer, serial) otherwise.
-    options.serial = 3;
+    options.serial = 4;
     options.not_before = std::time(nullptr) - 24 * 60 * 60;
     options.validity_seconds = 2ULL * 365 * 24 * 60 * 60;
+    // The primary advertised host is the published `.local` name (see
+    // IPPublishInstallHost): the manifest fetcher runs its own stack
+    // and never connected to an IP-literal host at all, so the name it
+    // will see must be on the certificate verbatim.
+    options.alt_names.push_back(ipashelf::SubjectAltName{
+        std::string(kIPInstallHostName.UTF8String), std::nullopt});
     options.alt_names.push_back(
         ipashelf::SubjectAltName{"localhost", std::nullopt});
     options.alt_names.push_back(
         ipashelf::SubjectAltName{"ipashelf.local", std::nullopt});
-    // The advertised host is the literal 127.0.0.1. Verifiers are
-    // supposed to match IP literals against iPAddress SANs (added for
-    // every local address below), but the OTA manifest fetcher is its
-    // own TLS stack and has historically been pickier than the
-    // URLSession one; a dNSName carrying the same literal covers
-    // verifiers that string-match the host against dNSName entries.
+    // Fallback host is the literal 127.0.0.1. Verifiers are supposed to
+    // match IP literals against iPAddress SANs (added for every local
+    // address below), but the OTA manifest fetcher has historically
+    // been pickier than the URLSession stack; a dNSName carrying the
+    // same literal covers verifiers that string-match the host
+    // against dNSName entries.
     options.alt_names.push_back(
         ipashelf::SubjectAltName{"127.0.0.1", std::nullopt});
     for (const auto &address : IPLocalIPv4Bytes()) {
@@ -1179,7 +1336,10 @@ struct ConnectionState {
     // if this fails, installs would fail opaquely minutes later.
     NSString *trustDetail = nil;
     if (!IPTrustEvaluates(@[ leafCertificate, certificate.der ],
-                          certificate.der, @"127.0.0.1", &trustDetail)) {
+                          certificate.der, @"127.0.0.1", &trustDetail) ||
+        !IPTrustEvaluates(@[ leafCertificate, certificate.der ],
+                          certificate.der, kIPInstallHostName,
+                          &trustDetail)) {
       CFRelease(leafKey);
       if (error != NULL) {
         *error = IPInstallError(
@@ -1219,11 +1379,39 @@ struct ConnectionState {
 
   // The manifest and payload are fetched by system services on this same
   // device, so loopback is the only address that must work — Wi-Fi state,
-  // VPNs and address changes cannot break an install. Advertise the literal
-  // 127.0.0.1 (not the name "localhost"): the listeners are IPv4, and
-  // resolving the name can try ::1 first, which has nowhere to land.
+  // VPNs and address changes cannot break an install. The plain-HTTP
+  // side (profile/page) keeps the literal 127.0.0.1, which Safari
+  // handles fine. The TLS side advertises a host *name* instead: on
+  // device the OTA fetcher never even attempted a connection to a
+  // manifest URL whose host was the IP literal, while setups that point
+  // a DNS name at loopback install fine. Our own A record via DNS-SD
+  // reproduces that shape without any outside DNS infrastructure. If
+  // publication or resolution fails (local-network permission denied,
+  // name conflict), fall back to the literal so everything else (the
+  // self-tests included) keeps behaving exactly as before — the
+  // activity log says which host was chosen.
   _host = @"127.0.0.1";
+  _installHost = _host;
+  _hostPublisher = NULL;
+  _hostRecord = NULL;
+  DNSServiceErrorType publishError = kDNSServiceErr_NoError;
+  if (IPPublishInstallHost(&_hostPublisher, &_hostRecord, &publishError) &&
+      IPHostResolvesToLoopback(kIPInstallHostName, 8)) {
+    _installHost = kIPInstallHostName;
+    [self noteActivity:[NSString stringWithFormat:
+                                      @"Install host %@ → 127.0.0.1",
+                                      kIPInstallHostName]];
+  } else {
+    IPUnpublishInstallHost(_hostPublisher, _hostRecord);
+    _hostPublisher = NULL;
+    _hostRecord = NULL;
+    [self noteActivity:[NSString stringWithFormat:
+                                      @"Install host name unavailable "
+                                      @"(dns-sd error %d); using 127.0.0.1",
+                                      (int)publishError]];
+  }
   if (![self startTLSListenerWithError:error]) {
+    [self unpublishInstallHost];
     [self setState:IPInstallServerStateFailed progress:0 message:@"TLS failed"];
     return NO;
   }
@@ -1236,6 +1424,7 @@ struct ConnectionState {
       _listener = NULL;
     }
     _tlsPort = 0;
+    [self unpublishInstallHost];
     [self setState:IPInstallServerStateFailed progress:0 message:@"HTTP failed"];
     return NO;
   }
@@ -1301,8 +1490,14 @@ struct ConnectionState {
     return NO;
   }
 
+  // Bind every local interface, not just loopback. The advertised name
+  // resolves to 127.0.0.1, so loopback would do on paper — but working
+  // on-device installers bind the wildcard, and it also covers the
+  // device's own LAN addresses (already on the leaf as iPAddress SANs)
+  // should the fetcher land there instead. The server only lives for
+  // the duration of the install sheet.
   nw_endpoint_t endpoint =
-      nw_endpoint_create_host("127.0.0.1", "0");
+      nw_endpoint_create_host("0.0.0.0", "0");
   nw_parameters_set_local_endpoint(parameters, endpoint);
   nw_listener_t listener = nw_listener_create(parameters);
   if (listener == NULL) {
@@ -1372,7 +1567,8 @@ struct ConnectionState {
     return NO;
   }
 
-  const std::string base = "https://" + std::string(_host.UTF8String) + ":" +
+  const std::string base = "https://" +
+                           std::string(_installHost.UTF8String) + ":" +
                            std::to_string(_tlsPort);
   ipashelf::OtaPackage package;
   package.bundle_id = _bundleID.UTF8String ?: "";
@@ -1519,6 +1715,14 @@ struct ConnectionState {
   });
 }
 
+- (void)unpublishInstallHost {
+  if (_hostPublisher == NULL) return;
+  IPUnpublishInstallHost(_hostPublisher, _hostRecord);
+  _hostPublisher = NULL;
+  _hostRecord = NULL;
+  [self noteActivity:@"Install host name withdrawn"];
+}
+
 - (void)notePayloadProgress:(double)fraction message:(nullable NSString *)message {
   const NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
   if (fraction < 1.0 && now - _lastProgressReport < 0.1) return;
@@ -1579,6 +1783,7 @@ struct ConnectionState {
 
 - (void)stop {
   _stopping.store(true);
+  [self unpublishInstallHost];
   if (_listener != NULL) {
     nw_listener_cancel(_listener);
     _listener = NULL;

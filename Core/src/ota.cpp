@@ -113,8 +113,13 @@ std::string build_install_manifest_xml(const OtaManifest& manifest) {
 }
 
 std::string build_itms_services_url(std::string_view manifest_url) {
+  // Query-value encoding à la URLComponents/URLQueryItem: the manifest
+  // URL stays essentially raw (`https://host:port/...`). The strict
+  // percent_encode form (`https:%2F%2F...`) parses fine as a URL query
+  // but the itms-services handler never even attempted a connection
+  // with it on device — SpringBoard just reports "cannot connect".
   return "itms-services://?action=download-manifest&url=" +
-         percent_encode(manifest_url);
+         percent_encode_query_value(manifest_url);
 }
 
 std::string build_install_page(std::string_view page_title,

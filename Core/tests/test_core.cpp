@@ -2523,9 +2523,27 @@ void test_ota_manifest(const std::string& fixtures) {
       build_itms_services_url("https://192.168.1.5:8443/install.plist");
   expect(install.rfind("itms-services://?action=download-manifest&url=", 0) == 0,
          "itms-services prefix");
-  expect(install.find("https%3A%2F%2F192.168.1.5%3A8443%2Finstall.plist") !=
-             std::string::npos,
-         "manifest url is percent encoded");
+  // URLQueryItem form: the manifest URL rides along essentially raw,
+  // exactly like Apple's documented examples and URLComponents output.
+  // The fully escaped form (`https%3A%2F%2F...`) never produced a
+  // connection attempt from the system handler on device.
+  expect_eq(install,
+            std::string("itms-services://?action=download-manifest&url="
+                        "https://192.168.1.5:8443/install.plist"),
+            "manifest url in query value form");
+  expect_eq(percent_encode_query_value("https://h:1/a.plist"),
+            std::string("https://h:1/a.plist"),
+            "query encoder leaves URL punctuation raw");
+  expect_eq(percent_encode_query_value("a b&c=d%e+f#g"),
+            std::string("a%20b%26c%3Dd%25e%2Bf%23g"),
+            "query encoder escapes structural characters");
+  expect_eq(percent_encode_query_value("caf\xC3\xA9"),
+            std::string("caf%C3%A9"),
+            "query encoder escapes non-ASCII bytes");
+  expect_eq(build_itms_services_url("https://ipashelf-install.local:9/x.plist"),
+            std::string("itms-services://?action=download-manifest&url="
+                        "https://ipashelf-install.local:9/x.plist"),
+            "itms link for the mDNS install host");
 
   const std::string page = build_install_page(
       manifest.title, manifest.bundle_id, manifest.display_version, install,

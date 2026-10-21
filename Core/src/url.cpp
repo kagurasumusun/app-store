@@ -61,6 +61,52 @@ std::string percent_encode(std::string_view value) {
   return output;
 }
 
+namespace {
+
+// Characters Foundation's URLComponents leaves raw inside a query item
+// value (the `urlQueryAllowed` set), minus the ones that would corrupt
+// the surrounding query if they ever appeared in a value (`&`, `=`,
+// `+`, `#`, `%` itself). For an ordinary URL — letters, digits, `:`,
+// `/`, `.`, `-` — the output is byte-identical to URLComponents'.
+bool is_query_value_allowed(unsigned char character) {
+  if (is_unreserved(character)) return true;
+  switch (character) {
+    case ':':
+    case '/':
+    case '?':
+    case '@':
+    case '!':
+    case '$':
+    case '\'':
+    case '(':
+    case ')':
+    case '*':
+    case ',':
+    case ';':
+      return true;
+    default:
+      return false;
+  }
+}
+
+}  // namespace
+
+std::string percent_encode_query_value(std::string_view value) {
+  std::string output;
+  output.reserve(value.size());
+  for (const char character : value) {
+    const auto byte = static_cast<unsigned char>(character);
+    if (is_query_value_allowed(byte)) {
+      output.push_back(character);
+    } else {
+      output.push_back('%');
+      output.push_back(hex_digit(byte >> 4));
+      output.push_back(hex_digit(byte & 0x0f));
+    }
+  }
+  return output;
+}
+
 std::string form_encode(
     const std::vector<std::pair<std::string, std::string>>& values) {
   std::string output;

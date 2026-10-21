@@ -29,6 +29,15 @@ struct Url {
 };
 
 [[nodiscard]] std::string percent_encode(std::string_view value);
+
+/// Percent-encodes a single query item value the way Foundation's
+/// URLComponents does for URLQueryItem: `:`, `/` and the rest of the
+/// query-allowed set stay raw. Needed for the itms-services link: the
+/// system handler reads the `url=` value most reliably in exactly this
+/// form (Apple's documented examples carry the manifest URL raw), while
+/// a fully escaped `https:%2F%2F...` value is accepted by some parser
+/// versions and silently dropped by others.
+[[nodiscard]] std::string percent_encode_query_value(std::string_view value);
 [[nodiscard]] std::string form_encode(
     const std::vector<std::pair<std::string, std::string>>& values);
 [[nodiscard]] std::string build_query(

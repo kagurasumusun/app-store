@@ -222,8 +222,8 @@ final class InstallService {
     private func noteDiagnostic(_ line: String) {
         let time = Date().formatted(date: .omitted, time: .standard)
         diagnosticLines.append("\(time)  \(line)")
-        if diagnosticLines.count > 6 {
-            diagnosticLines.removeFirst(diagnosticLines.count - 6)
+        if diagnosticLines.count > 10 {
+            diagnosticLines.removeFirst(diagnosticLines.count - 10)
         }
     }
 
