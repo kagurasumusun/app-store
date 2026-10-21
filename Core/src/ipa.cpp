@@ -18,11 +18,6 @@ std::string zip_error(mz_zip_archive& archive, std::string_view context) {
   return std::string(context) + ": " + std::string(mz_zip_get_error_string(error));
 }
 
-bool is_root_metadata(std::string_view name) {
-  return name == "iTunesMetadata.plist" || name == "iTunesArtwork" ||
-         name == "iTunesArtwork@2x";
-}
-
 std::vector<std::string> split_path(std::string_view path) {
   std::vector<std::string> parts;
   std::size_t start = 0;
@@ -281,7 +276,22 @@ Status write_patched_ipa(const IpaPatchOptions& options,
     return false;
   };
 
+  // The finished package only gains a metadata document when the store
+  // package lacks one. An existing document (and any root artwork) is
+  // carried over untouched, exactly like every other entry.
+  bool source_has_metadata = false;
   const mz_uint count = mz_zip_reader_get_num_files(&reader);
+  for (mz_uint index = 0; index < count; ++index) {
+    mz_zip_archive_file_stat stat{};
+    if (mz_zip_reader_file_stat(&reader, index, &stat) &&
+        matches_name(stat.m_filename, "iTunesMetadata.plist")) {
+      source_has_metadata = true;
+      break;
+    }
+  }
+  const bool replace_artwork =
+      options.artwork.has_value() && !options.artwork->empty();
+
   for (mz_uint index = 0; index < count; ++index) {
     if (token.cancelled()) {
       cleanup();
@@ -293,7 +303,11 @@ Status write_patched_ipa(const IpaPatchOptions& options,
       cleanup();
       return fail(ErrorCode::kParse, message);
     }
-    if (is_root_metadata(stat.m_filename)) continue;
+    if (replace_artwork &&
+        (matches_name(stat.m_filename, "iTunesArtwork") ||
+         matches_name(stat.m_filename, "iTunesArtwork@2x"))) {
+      continue;
+    }
     if (is_sinf_target(stat.m_filename)) continue;
     if (!mz_zip_writer_add_from_zip_reader(&writer, &reader, index)) {
       const std::string message = zip_error(writer, "cannot copy IPA entry");
@@ -302,14 +316,16 @@ Status write_patched_ipa(const IpaPatchOptions& options,
     }
   }
 
-  // Apple's own tooling writes the metadata document as a binary plist.
-  const Bytes metadata = options.metadata.dump_binary();
-  if (!mz_zip_writer_add_mem_ex(&writer, "iTunesMetadata.plist", metadata.data(),
-                                metadata.size(), nullptr, 0,
-                                MZ_DEFAULT_COMPRESSION, 0, 0)) {
-    const std::string message = zip_error(writer, "cannot write metadata");
-    cleanup();
-    return fail(ErrorCode::kStorage, message);
+  if (!source_has_metadata) {
+    // Apple's own tooling writes the metadata document as a binary plist.
+    const Bytes metadata = options.metadata.dump_binary();
+    if (!mz_zip_writer_add_mem_ex(&writer, "iTunesMetadata.plist",
+                                  metadata.data(), metadata.size(), nullptr,
+                                  0, MZ_DEFAULT_COMPRESSION, 0, 0)) {
+      const std::string message = zip_error(writer, "cannot write metadata");
+      cleanup();
+      return fail(ErrorCode::kStorage, message);
+    }
   }
   if (options.artwork.has_value() && !options.artwork->empty()) {
     if (!mz_zip_writer_add_mem_ex(&writer, "iTunesArtwork",

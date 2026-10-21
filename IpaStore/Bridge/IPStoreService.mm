@@ -570,24 +570,6 @@ static NSDictionary<NSString *, id> *SidecarForApp(IPStoreApp *app,
                   completion:(void (^)(NSString *_Nullable, NSError *_Nullable))completion;
 @end
 
-/// Best-effort download of the artwork Apple reports with the download item
-/// (injected into the finished IPA as iTunesArtwork). A failure only costs
-/// the icon, never the package, so it is not fatal.
-static std::optional<ipashelf::Bytes> FetchArtwork(const std::string &url) {
-  if (url.empty()) return std::nullopt;
-  ipashelf::HttpRequest request;
-  request.method = "GET";
-  request.url = url;
-  request.headers.set(
-      "User-Agent", std::string(ipashelf::kDefaultUserAgent));
-  ipashelf::CancellationSource source;
-  auto response = IPSharedHTTPTransport().send(request, source.token());
-  if (!response) return std::nullopt;
-  if (response.value().status != 200 || response.value().body.empty()) {
-    return std::nullopt;
-  }
-  return std::move(response.value().body);
-}
 
 static ipashelf::StoreClient MakeStoreClient(void) {
   ipashelf::StoreConfiguration configuration;
@@ -1188,7 +1170,9 @@ static ipashelf::StoreClient MakeStoreClient(void) {
   options.destination_path = destination.fileSystemRepresentation;
   options.sinf_entries = std::move(sinfEntries).value();
   options.metadata = ipashelf::build_itunes_metadata(offer, coreAccount);
-  options.artwork = FetchArtwork(offer.artwork_url);
+  // No artwork is injected: the finished package gains only the sinf blobs
+  // and (when the store package lacks one) the metadata document, mirroring
+  // the reference client's patcher. Store artwork stays untouched.
 
   ipashelf::CancellationSource patchSource;
   auto status = ipashelf::write_patched_ipa(options, patchSource.token());

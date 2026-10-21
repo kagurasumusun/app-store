@@ -69,8 +69,10 @@ resolve_sinf_entries(const IpaInfo& info, const std::vector<Sinf>& sinfs);
 [[nodiscard]] Status validate_ipa_platform(const IpaInfo& info,
                                            Platform platform);
 
-/// Copies the source archive into a patched archive. Existing iTunes metadata,
-/// artwork and sinf entries are replaced; everything else is copied verbatim.
+/// Copies the source archive into a patched archive. The sinf entries are
+/// replaced, a metadata document is added only when the source carries none,
+/// and root artwork is replaced only when the options supply one; every
+/// other entry is copied verbatim.
 [[nodiscard]] Status write_patched_ipa(const IpaPatchOptions& options,
                                        const CancellationToken& token);
 

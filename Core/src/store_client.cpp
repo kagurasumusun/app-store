@@ -1660,11 +1660,6 @@ Result<std::unique_ptr<SapSession>> StoreClient::open_sap_session(
 
 namespace {
 
-struct DownloadDocument {
-  PlistValue root = PlistValue::dictionary();
-  int http_status = 0;
-};
-
 bool is_store_buy_host(std::string_view host) {
   const std::string lower = to_lower(host);
   return lower == "buy.itunes.apple.com" ||
@@ -1738,23 +1733,47 @@ Result<HttpResponse> send_store_post(
   }
 }
 
-Result<DownloadDocument> post_download_document(
-    HttpTransport& transport, const std::string& url, const Bytes& body,
-    const HttpHeaders& headers, const CancellationToken& token) {
-  auto response =
-      send_store_post(transport, url, headers, body,
-                      approve_download_redirect, token);
-  if (!response) return response.error();
+// Result of one legacy download-endpoint fetch: the parsed document, or
+// the failure annotated the way the fallback rules need (an empty-body
+// HTTP 500 from redownload is what sends the request on to updateProduct).
+struct EndpointFetch {
+  Result<PlistValue> root = make_error(ErrorCode::kInternal,
+                                       "download endpoint was not contacted");
+  int http_status = 0;
+  bool empty_body = false;
+};
+
+// POSTs one payload to a legacy download endpoint, replaying the identical
+// request across pod redirects the way the store's clients do. Any non-200
+// status is a failure, never a document.
+EndpointFetch fetch_endpoint_document(HttpTransport& transport,
+                                      const std::string& url,
+                                      const HttpHeaders& headers,
+                                      const Bytes& body,
+                                      const CancellationToken& token) {
+  EndpointFetch fetched;
+  auto response = send_store_post(transport, url, headers, body,
+                                  approve_download_redirect, token);
+  if (!response) {
+    fetched.root = response.error();
+    return fetched;
+  }
+  fetched.http_status = response.value().status;
+  fetched.empty_body = response.value().body.empty();
   if (response.value().status != 200) {
-    return Error{ErrorCode::kHttpStatus,
-                 "download request returned HTTP " +
-                     std::to_string(response.value().status),
-                 response.value().status};
+    fetched.root = Error{ErrorCode::kHttpStatus,
+                         "download request returned HTTP " +
+                             std::to_string(response.value().status),
+                         response.value().status};
+    return fetched;
   }
   auto document = decode_plist_response(response.value());
-  if (!document) return document.error();
-  return DownloadDocument{std::move(document).value(),
-                          response.value().status};
+  if (!document) {
+    fetched.root = document.error();
+    return fetched;
+  }
+  fetched.root = std::move(document).value();
+  return fetched;
 }
 
 HttpHeaders download_headers(const Account& account,
@@ -1773,11 +1792,42 @@ std::size_t download_item_count(const PlistValue& root) {
   return items->array_items().size();
 }
 
-bool is_empty_download_response(const DownloadDocument& document) {
-  return document.http_status == 200 &&
-         document.root.string_or("failureType").empty() &&
-         document.root.string_or("customerMessage").empty() &&
-         download_item_count(document.root) == 0;
+// Renders a plist scalar the way the store client compares identifiers:
+// strings pass through, integers become their decimal form, and anything
+// else counts as absent.
+std::string plist_describe(const PlistValue* value) {
+  if (value == nullptr) return {};
+  if (value->is_string()) return value->string_value();
+  if (value->is_integer()) return std::to_string(value->integer_value());
+  return {};
+}
+
+std::string plist_describe(const PlistValue& root, std::string_view key) {
+  return plist_describe(root.find(std::string(key)));
+}
+
+// The volume store answers requests it cannot serve in exactly two ways:
+// failure 5002, or a completely silent success (no items, no message, no
+// dialog). Those are the only shapes a redownload is asked to recover;
+// anything else is a final answer.
+bool requires_redownload(const PlistValue& root) {
+  const std::string failure = plist_describe(root, "failureType");
+  if (failure == "5002") return true;
+  if (!failure.empty()) return false;
+  if (!root.string_or("customerMessage").empty()) return false;
+  if (root.find("dialog") != nullptr || root.find("action") != nullptr) {
+    return false;
+  }
+  if (const PlistValue* status = root.find("status")) {
+    const bool zero = (status->is_integer() && status->integer_value() == 0) ||
+                      (status->is_real() && status->real_value() == 0.0);
+    if (!zero) return false;
+  }
+  const PlistValue* items = root.find("songList");
+  if (items != nullptr && items->is_array()) {
+    return items->array_items().empty();
+  }
+  return items == nullptr;
 }
 
 bool is_unavailable_message(std::string_view message) {
@@ -1786,22 +1836,38 @@ bool is_unavailable_message(std::string_view message) {
          ends_with(lowered, " no longer available");
 }
 
-// The volume store answers some owned-app requests with failure 5002 and no
-// items even though redownload can serve them; treat that shape like the
-// empty responses and move on instead of failing the whole download.
-bool is_license_conflict_response(const DownloadDocument& document) {
-  return document.http_status == 200 &&
-         document.root.string_or("failureType") == "5002" &&
-         download_item_count(document.root) == 0;
-}
-
-// Limit recovery to the observed availability response; other customer
-// messages and structured failures retain their normal error handling.
-bool is_unavailable_download_response(const DownloadDocument& document) {
-  return document.http_status == 200 &&
-         document.root.string_or("failureType").empty() &&
-         download_item_count(document.root) == 0 &&
-         is_unavailable_message(document.root.string_or("customerMessage"));
+// A redownload/update answer is only trusted once it names exactly the app
+// and external version that were requested. Structured failures pass
+// through untouched so the caller reports them like any store failure.
+Result<PlistValue> validate_recovery_response(const PlistValue& root,
+                                              const App& app,
+                                              std::string_view version) {
+  if (!plist_describe(root, "failureType").empty()) return root;
+  bool valid = root.string_or("customerMessage").empty() &&
+               root.find("dialog") == nullptr &&
+               root.find("action") == nullptr;
+  const PlistValue* metadata = nullptr;
+  if (valid) {
+    if (const PlistValue* items = root.find("songList");
+        items != nullptr && items->is_array() &&
+        items->array_items().size() == 1) {
+      metadata = items->array_items().front().find("metadata");
+    }
+  }
+  // Software records always carry the bundle identifier the recovery
+  // response must name; when ours does not, that one comparison is skipped
+  // rather than rejecting an offer the strict interpreter will check again.
+  valid = valid && metadata != nullptr && metadata->is_dictionary() &&
+          plist_describe(*metadata, "itemId") == std::to_string(app.id) &&
+          plist_describe(*metadata,
+                         "softwareVersionExternalIdentifier") == version &&
+          (app.bundle_id.empty() ||
+           metadata->string_or("softwareVersionBundleId") == app.bundle_id);
+  if (!valid) {
+    return make_error(ErrorCode::kParse,
+                      "Apple returned an invalid download response");
+  }
+  return root;
 }
 
 // Interprets a download response the way the Store client must: structured
@@ -1840,6 +1906,13 @@ Result<DownloadOffer> interpret_download_response(const PlistValue& root,
   }
   auto offer = parse_download_response(root);
   if (!offer) return offer;
+  if (offer.value().sinfs.empty()) {
+    // An offer without FairPlay data can only ever produce an uninstallable
+    // package; the store's clients reject it before a single byte of the
+    // asset moves, and so does this one.
+    return make_error(ErrorCode::kNoOffer,
+                      "download response carries no FairPlay data");
+  }
   if (strict) {
     // An empty requested version lets the server select a version while
     // retaining the app identity checks; explicit versions must match.
@@ -1879,10 +1952,11 @@ bool valid_dispatch_endpoint(std::string_view endpoint,
 
 std::string volume_store_url(const Account& account) {
   // The legacy volume store URL is not read from the bag (that key now
-  // returns the ent/download URL); it is rebuilt from the account pod.
+  // returns the ent/download URL); it is rebuilt from the account pod. An
+  // account without a known pod goes to the store's default pod host.
   const std::string pod = sanitize_pod(account.pod);
-  return "https://" + (pod.empty() ? std::string{} : "p" + pod + "-") +
-         "buy.itunes.apple.com" + std::string(kVolumePath);
+  return "https://p" + (pod.empty() ? std::string{"25"} : pod) +
+         "-buy.itunes.apple.com" + std::string(kVolumePath);
 }
 
 }  // namespace
@@ -2084,6 +2158,114 @@ Result<DownloadOffer> StoreClient::send_ent_download(
   return result;
 }
 
+Result<std::string> StoreClient::platform_external_version_id(
+    std::int64_t app_id, std::string_view country,
+    std::string_view platform_value, const CancellationToken& token) {
+  // The MZStorePlatform lookup is the store-client service that reports the
+  // current offer's external version identifier; redownload pins depend on
+  // it because the public catalog never exposes external identifiers.
+  const std::string url =
+      "https://uclient-api.itunes.apple.com/WebObjects/MZStorePlatform.woa/"
+      "wa/lookup?version=2&id=" +
+      std::to_string(app_id) +
+      "&p=mdm-lockup&caller=MDM&platform=" + percent_encode(platform_value) +
+      "&cc=" + percent_encode(country) + "&l=en";
+  HttpRequest request;
+  request.method = "GET";
+  request.url = url;
+  request.headers.set("User-Agent", configuration_.user_agent);
+  auto response = transport_.send(request, token);
+  if (!response) return response.error();
+  if (response.value().status != 200) {
+    return Error{ErrorCode::kHttpStatus,
+                 "version lookup returned HTTP " +
+                     std::to_string(response.value().status),
+                 response.value().status};
+  }
+  if (response.value().body.empty()) {
+    return make_error(ErrorCode::kParse,
+                      "version lookup returned an empty response");
+  }
+  auto parsed = Json::parse(std::string(response.value().body.begin(),
+                                        response.value().body.end()));
+  if (!parsed || !parsed.value().is_object()) {
+    return make_error(ErrorCode::kParse,
+                      "version lookup returned an invalid response");
+  }
+  const Json* results = parsed.value().find("results");
+  const Json* item =
+      results != nullptr ? results->find(std::to_string(app_id)) : nullptr;
+  if (item == nullptr || !item->is_object()) {
+    return make_error(ErrorCode::kParse,
+                      "version lookup returned an invalid response");
+  }
+  const Json* offers = item->find("offers");
+  if (offers == nullptr || !offers->is_array() ||
+      offers->array_items().empty()) {
+    return make_error(ErrorCode::kNoOffer,
+                      "version lookup returned no offers");
+  }
+  const Json& offer = offers->array_items().front();
+  if (const Json* version_info = offer.find("version")) {
+    if (const Json* external_id = version_info->find("externalId")) {
+      if (external_id->is_string() && !external_id->string_or().empty()) {
+        return external_id->string_or();
+      }
+      if (external_id->is_number()) {
+        return std::to_string(external_id->int_value());
+      }
+    }
+  }
+  // The buy parameters carry the same identifier when the version object
+  // does not spell it out.
+  if (const Json* buy_params = offer.find("buyParams");
+      buy_params != nullptr && buy_params->is_string()) {
+    const auto decode = [](std::string_view text) {
+      std::string out;
+      out.reserve(text.size());
+      for (std::size_t index = 0; index < text.size(); ++index) {
+        const auto hex = [](char character) -> int {
+          if (character >= '0' && character <= '9') return character - '0';
+          if (character >= 'a' && character <= 'f') {
+            return character - 'a' + 10;
+          }
+          if (character >= 'A' && character <= 'F') {
+            return character - 'A' + 10;
+          }
+          return -1;
+        };
+        if (text[index] == '%' && index + 2 < text.size() &&
+            hex(text[index + 1]) >= 0 && hex(text[index + 2]) >= 0) {
+          out += static_cast<char>(hex(text[index + 1]) * 16 +
+                                   hex(text[index + 2]));
+          index += 2;
+        } else {
+          out += text[index];
+        }
+      }
+      return out;
+    };
+    const std::string parameters = buy_params->string_or();
+    std::size_t position = 0;
+    while (position < parameters.size()) {
+      const std::size_t end = parameters.find('&', position);
+      const std::string_view pair(
+          parameters.data() + position,
+          (end == std::string::npos ? parameters.size() : end) - position);
+      const std::size_t equals = pair.find('=');
+      if (equals != std::string_view::npos &&
+          pair.substr(0, equals) == "appExtVrsId") {
+        const std::string decoded = decode(pair.substr(equals + 1));
+        if (!decoded.empty()) return decoded;
+      }
+      if (end == std::string::npos) break;
+      position = end + 1;
+    }
+  }
+  return make_error(ErrorCode::kParse,
+                    "version lookup did not include a version identifier");
+}
+
 Result<DownloadOffer> StoreClient::send_download_product(
     const Account& account, const App& app, const HardwareIdentity& hardware,
     std::string_view external_version_id, Platform platform,
@@ -2139,113 +2321,91 @@ Result<DownloadOffer> StoreClient::send_download_product(
     }
   }
 
-  const auto legacy_request = [&](std::string_view base_url,
+  const auto fetch_document = [&](std::string_view base_url,
                                   const char* version_key,
                                   std::string_view request_version) {
     const Bytes body =
         build_download_body(app.id, guid, version_key, request_version);
-    return post_download_document(
+    return fetch_endpoint_document(
         transport_,
-        std::string(base_url) + "?guid=" + percent_encode(guid), body,
-        download_headers(account, configuration_.user_agent), token);
+        std::string(base_url) + "?guid=" + percent_encode(guid),
+        download_headers(account, configuration_.user_agent), body, token);
   };
 
-  auto volume = legacy_request(volume_store_url(account),
-                               "externalVersionId", version);
-  // The volume store answers many owned-app requests with a bare HTTP 500
-  // and no plist at all; that is exactly the population the redownload
-  // endpoint serves, so a server error falls through instead of aborting.
-  const bool volume_server_error =
-      !volume && volume.error().http_status >= 500;
-  if (!volume && !volume_server_error) return volume.error();
-  if (volume && !is_empty_download_response(volume.value()) &&
-      !is_unavailable_download_response(volume.value()) &&
-      !is_license_conflict_response(volume.value())) {
-    return interpret_download_response(volume.value().root, app, version,
-                                        false);
+  // The volume store is the primary endpoint. Transport and HTTP failures
+  // end the request right there; only the store's designated "cannot serve
+  // this" shapes fall through to a version-pinned redownload.
+  EndpointFetch volume =
+      fetch_document(volume_store_url(account), "externalVersionId", version);
+  if (!volume.root) return volume.root.error();
+  if (!requires_redownload(volume.root.value())) {
+    return interpret_download_response(volume.root.value(), app, version,
+                                       false);
   }
 
-  // Try redownload when the volume store returns no items, either silently,
-  // with the message-only "No Longer Available" response, or with the
-  // itemless 5002 license conflict.
-  if (!bag) {
-    auto fetched = fetch_bag(hardware, token);
-    if (!fetched) return fetched.error();
-    bag = fetched.value();
-  }
-  if (bag->redownload_endpoint.empty()) {
-    if (!volume) return volume.error();
-    return interpret_download_response(volume.value().root, app, version,
-                                        false);
-  }
-  if (!valid_dispatch_endpoint(bag->redownload_endpoint, "redownload")) {
-    return make_error(ErrorCode::kParse,
-                      "invalid download endpoint in Apple bag");
-  }
-
-  if (version.empty() && (platform == Platform::kUnspecified ||
-                          platform == Platform::kIPhone ||
-                          platform == Platform::kIPad)) {
-    // Unpinned redownloads can fail or return a tvOS package. Select the
-    // current iOS build when the catalog has an offer.
-    const Platform pinned_platform =
-        platform == Platform::kUnspecified ? Platform::kIPhone : platform;
-    auto latest = latest_external_version_id(app, account.region,
-                                             pinned_platform, token);
-    if (!latest) {
-      if (catalog_failure_allows_unpinned(latest.error())) {
-        // A delisted or catalog-throttled app can still be available to
-        // this account. Try once without a version; the caller validates
-        // the package platform.
-        auto unpinned = legacy_request(bag->redownload_endpoint,
-                                       "appExtVrsId", "");
-        if (!unpinned && unpinned.error().http_status >= 500 &&
-            !bag->update_endpoint.empty() &&
-            valid_dispatch_endpoint(bag->update_endpoint, "update")) {
-          // Unpinned redownload can answer a bare 500 for the same
-          // licenses updateProduct still serves; give it one attempt
-          // before surfacing the failure.
-          auto update =
-              legacy_request(bag->update_endpoint, "appExtVrsId", "");
-          if (update) {
-            return interpret_download_response(update.value().root, app, "",
-                                                true);
-          }
-        }
-        if (!unpinned) return unpinned.error();
-        return interpret_download_response(unpinned.value().root, app, "",
-                                            true);
+  // A redownload is always pinned to a concrete external version. When the
+  // caller named none, the current one comes from the platform lookup
+  // service the store clients use for exactly this purpose.
+  if (version.empty()) {
+    if (platform == Platform::kIPhone || platform == Platform::kIPad ||
+        platform == Platform::kUnspecified ||
+        platform == Platform::kAppleTV) {
+      const std::string country = to_lower(trim(account.region));
+      if (country.empty()) {
+        return make_error(
+            ErrorCode::kInvalidArgument,
+            "the account storefront does not have a known country");
       }
-      return latest.error();
+      auto resolved = platform_external_version_id(
+          app.id, country,
+          platform == Platform::kAppleTV ? "atv9" : "enterprisestore",
+          token);
+      if (!resolved) return resolved.error();
+      version = resolved.value();
+    } else {
+      auto resolved =
+          latest_external_version_id(app, account.region, platform, token);
+      if (!resolved) return resolved.error();
+      version = resolved.value();
     }
-    version = latest.value();
   }
 
-  auto redownload =
-      legacy_request(bag->redownload_endpoint, "appExtVrsId", version);
-  const bool update_platform =
-      platform == Platform::kUnspecified || platform == Platform::kIPhone ||
-      platform == Platform::kIPad || platform == Platform::kMacOS ||
-      platform == Platform::kAppleTV || platform == Platform::kWatchOS;
-  const bool try_update =
-      !bag->update_endpoint.empty() && !version.empty() && update_platform &&
-      ((!redownload && redownload.error().http_status >= 500) ||
-       (redownload && is_unavailable_download_response(redownload.value())));
-  if (try_update) {
-    // The bag's updateProduct can serve pinned versions when redownload
-    // returns an empty HTTP 500 or a message-only availability error.
-    if (!valid_dispatch_endpoint(bag->update_endpoint, "update")) {
-      return make_error(ErrorCode::kParse,
-                        "invalid download endpoint in Apple bag");
+  // The bag advertises the current dispatch endpoints. Without one the
+  // redownload endpoint still has its well-known default address, while
+  // updateProduct is only ever taken from the bag.
+  if (!bag) {
+    if (auto fetched = fetch_bag(hardware, token); fetched) {
+      bag = fetched.value();
     }
-    auto update = legacy_request(bag->update_endpoint, "appExtVrsId", version);
-    if (!update) return update.error();
-    return interpret_download_response(update.value().root, app, version,
-                                        true);
   }
-  if (!redownload) return redownload.error();
-  return interpret_download_response(redownload.value().root, app, version,
-                                      false);
+  std::string redownload_url =
+      "https://downloaddispatch.itunes.apple.com/r/redownload";
+  if (bag && !bag->redownload_endpoint.empty() &&
+      valid_dispatch_endpoint(bag->redownload_endpoint, "redownload")) {
+    redownload_url = bag->redownload_endpoint;
+  }
+
+  EndpointFetch recovery =
+      fetch_document(redownload_url, "appExtVrsId", version);
+  if (!recovery.root) {
+    // updateProduct recovers exactly one redownload failure mode: the bare,
+    // bodiless HTTP 500, and only with a bag-provided update endpoint.
+    const bool recoverable = recovery.http_status == 500 &&
+                             recovery.empty_body && !version.empty() && bag &&
+                             !bag->update_endpoint.empty() &&
+                             valid_dispatch_endpoint(bag->update_endpoint,
+                                                     "update");
+    if (!recoverable) return recovery.root.error();
+    EndpointFetch update =
+        fetch_document(bag->update_endpoint, "appExtVrsId", version);
+    if (!update.root) return update.root.error();
+    recovery = std::move(update);
+  }
+
+  auto validated =
+      validate_recovery_response(recovery.root.value(), app, version);
+  if (!validated) return validated.error();
+  return interpret_download_response(validated.value(), app, version, true);
 }
 
 Result<DownloadOffer> StoreClient::download_offer(

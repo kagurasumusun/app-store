@@ -1057,7 +1057,7 @@ void test_catalog_throttling() {
   }
 }
 
-void test_download_unpinned_when_catalog_throttled() {
+void test_download_redownload_version_pinning() {
   using namespace ipashelf;
   FakeTransport transport;
   StoreConfiguration configuration;
@@ -1087,29 +1087,46 @@ void test_download_unpinned_when_catalog_throttled() {
               "throttled macOS version");
   }
 
-  // iPhone redownload: the volume store is empty, the catalog is
-  // throttled, and the redownload still proceeds unpinned.
+  // iPhone redownload: the volume store is silently empty, so the chain
+  // pins the redownload to the version the MZStorePlatform lookup reports
+  // before asking the bag for the dispatch endpoint.
   app.id = 987654324;
   transport.requests.clear();
   PlistValue empty = PlistValue::dictionary();
   empty.set("songList", PlistValue::array());
   transport.enqueue_plist(empty);
+  transport.enqueue_response(
+      200, "{\"results\":{\"987654324\":{\"offers\":[{\"version\":"
+           "{\"externalId\":9001}}]}}}");
   transport.enqueue_plist(make_bag());
-  transport.enqueue_response(429, "");
-  transport.enqueue_response(429, "");
-  transport.enqueue_response(429, "");
   transport.enqueue_plist(make_download_reply(app.id));
   auto redownload = client.download_offer(account, app, "",
                                           Platform::kIPhone, source.token());
   expect(redownload.has_value(),
-         "redownload survives a throttled catalog");
-  expect_eq(transport.requests.size(), std::size_t{6},
-            "volume, bag, throttled catalog, redownload");
-  if (transport.requests.size() == 6) {
-    expect(transport.requests[5].url.find("/r/redownload") !=
+         "redownload pinned through platform lookup");
+  expect_eq(transport.requests.size(), std::size_t{4},
+            "volume, platform lookup, bag, redownload");
+  if (transport.requests.size() == 4) {
+    expect(transport.requests[1].url.find(
+               "uclient-api.itunes.apple.com") != std::string::npos,
+           "platform lookup endpoint");
+    expect(transport.requests[3].url.find("/r/redownload") !=
                std::string::npos,
-           "unpinned redownload sent");
+           "pinned redownload sent");
   }
+
+  // A redownload is never issued unpinned: when the platform lookup cannot
+  // resolve a version, the download fails before the bag is even fetched.
+  app.id = 987654328;
+  transport.requests.clear();
+  transport.enqueue_plist(empty);
+  transport.enqueue_response(429, "");
+  auto throttled = client.download_offer(account, app, "",
+                                         Platform::kIPhone, source.token());
+  expect(!throttled.has_value(),
+         "unresolvable version stops the redownload");
+  expect_eq(transport.requests.size(), std::size_t{2},
+            "volume then failed platform lookup only");
 
   // A catalog answering with a different app's resource is a parse-level
   // failure, but the pin is advisory: the macOS download must proceed
@@ -1139,7 +1156,7 @@ void test_download_unpinned_when_catalog_throttled() {
   }
 }
 
-void test_download_volume_server_error_fallback() {
+void test_download_volume_server_error_is_final() {
   using namespace ipashelf;
   FakeTransport transport;
   StoreConfiguration configuration;
@@ -1152,44 +1169,26 @@ void test_download_volume_server_error_fallback() {
   account.device_id = "AABBCCDDEEFF";
   account.region = "us";
 
-  // The volume store answers many owned-app requests with a bare HTTP 500;
-  // the chain must continue to redownload instead of surfacing it.
+  // An HTTP failure from the volume store is final: the store's clients
+  // never paper over it with a redownload, so neither do we.
   App app;
   app.id = 987654325;
   app.bundle_id = "com.example.sample";
   transport.enqueue_response(500, "");
-  transport.enqueue_plist(make_bag());
-  transport.enqueue_plist(make_download_reply());
   auto offer = client.download_offer(account, app, "9001", Platform::kIPhone,
                                      source.token());
-  expect(offer.has_value(), "pinned download survives a volume-store 500");
-  expect_eq(transport.requests.size(), std::size_t{3},
-            "volume, bag, redownload after 500");
-  if (transport.requests.size() == 3) {
-    expect(transport.requests[2].url.find("/r/redownload") !=
-               std::string::npos,
-           "redownload attempted after volume 500");
-  }
+  expect(!offer.has_value(), "volume-store 500 is surfaced");
+  expect_eq(transport.requests.size(), std::size_t{1},
+            "no fallback after a volume 500");
 
-  // Unpinned: volume 500, then the catalog pin selects the iOS build for
-  // the redownload request.
   app.id = 987654326;
   transport.requests.clear();
   transport.enqueue_response(500, "");
-  transport.enqueue_plist(make_bag());
-  transport.enqueue_response(200, catalog_json(app.id, "9001"));
-  transport.enqueue_plist(make_download_reply());
   auto unpinned = client.download_offer(account, app, "", Platform::kIPhone,
                                         source.token());
-  expect(unpinned.has_value(),
-         "unpinned download survives a volume-store 500");
-  expect_eq(transport.requests.size(), std::size_t{4},
-            "volume, bag, catalog, redownload after 500");
-  if (transport.requests.size() == 4) {
-    expect(transport.requests[3].url.find("/r/redownload") !=
-               std::string::npos,
-           "pinned redownload after volume 500");
-  }
+  expect(!unpinned.has_value(), "unpinned volume-store 500 is surfaced");
+  expect_eq(transport.requests.size(), std::size_t{1},
+            "no fallback after an unpinned volume 500");
 }
 
 void test_artwork_urls() {
@@ -1367,10 +1366,11 @@ void test_download_fallback() {
   PlistValue empty = PlistValue::dictionary();
   empty.set("songList", PlistValue::array());
 
-  // Volume store (empty) -> bag fetch -> redownload.
+  // Volume store (empty) -> bag fetch -> redownload. The recovery reply
+  // must name the requested item in its metadata to be accepted.
   transport.enqueue_plist(empty);
   transport.enqueue_plist(make_bag());
-  transport.enqueue_plist(make_download_reply());
+  transport.enqueue_plist(make_download_reply(app.id));
 
   auto offer = client.download_offer(account, app, "9001", Platform::kIPhone,
                                      source.token());
@@ -2328,6 +2328,46 @@ void test_ipa_patch(const std::string& fixtures) {
                             bytes_of("x"));
   expect(!verify_ipa_fairplay(options.destination_path, missing_blob).ok(),
          "missing sinf entry rejected");
+
+  // A package that already carries a metadata document keeps it byte for
+  // byte; the patcher only adds one when the store package lacks it.
+  IpaPatchOptions preserved;
+  preserved.source_path = fixtures + "/sample-with-metadata.ipa";
+  preserved.destination_path = fixtures + "/patched-preserved.ipa";
+  preserved.metadata = metadata;
+  preserved.sinf_entries = sinf_entries.value();
+  const Status preserved_status =
+      write_patched_ipa(preserved, source_token.token());
+  expect(preserved_status.ok(), "metadata-carrying IPA patches");
+  if (preserved_status) {
+    mz_zip_archive kept{};
+    expect(mz_zip_reader_init_file(&kept,
+                                   preserved.destination_path.c_str(), 0),
+           "preserved IPA opens");
+    const int kept_index =
+        mz_zip_reader_locate_file(&kept, "iTunesMetadata.plist", nullptr, 0);
+    expect(kept_index >= 0, "preserved metadata entry exists");
+    std::string kept_text;
+    if (kept_index >= 0) {
+      mz_zip_archive_file_stat kept_stat{};
+      if (mz_zip_reader_file_stat(&kept, static_cast<mz_uint>(kept_index),
+                                  &kept_stat)) {
+        Bytes buffer(static_cast<std::size_t>(kept_stat.m_uncomp_size));
+        if (mz_zip_reader_extract_to_mem(
+                &kept, static_cast<mz_uint>(kept_index), buffer.data(),
+                buffer.size(), 0)) {
+          kept_text = text_of(buffer);
+        }
+      }
+    }
+    expect_eq(kept_text, std::string("stale-metadata"),
+              "existing metadata preserved verbatim");
+    mz_zip_reader_end(&kept);
+    expect(verify_ipa_fairplay(preserved.destination_path,
+                               sinf_entries.value())
+               .ok(),
+           "preserved IPA verifies against its sinf blobs");
+  }
 
   std::ofstream marker(fixtures + "/patched.ready");
   marker << "ok";
@@ -3770,8 +3810,8 @@ int main(int argc, char** argv) {
   test_search_exact_identifiers();
   test_latest_external_version();
   test_catalog_throttling();
-  test_download_unpinned_when_catalog_throttled();
-  test_download_volume_server_error_fallback();
+  test_download_redownload_version_pinning();
+  test_download_volume_server_error_is_final();
   test_artwork_urls();
   test_lookup_apps();
   test_download_offer();

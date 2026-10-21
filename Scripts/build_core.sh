@@ -92,7 +92,7 @@ with open(sys.argv[1], "wb") as handle:
     plistlib.dump(document, handle, fmt=plistlib.FMT_BINARY, sort_keys=False)
 PY
 
-python3 - "${fixtures}/sample.ipa" <<'PY'
+python3 - "${fixtures}/sample.ipa" "${fixtures}/sample-with-metadata.ipa" <<'PY'
 import plistlib
 import sys
 import zipfile
@@ -111,20 +111,29 @@ manifest = {
         "Frameworks/Kit.framework/SC_Info/Kit.sinf",
     ],
 }
-with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as archive:
-    archive.writestr("Payload/Sample.app/Info.plist",
-                     plistlib.dumps(info, fmt=plistlib.FMT_BINARY))
-    archive.writestr("Payload/Sample.app/Sample", b"MACH-O-PAYLOAD")
-    archive.writestr("Payload/Sample.app/SC_Info/Sample.sinf", b"original-sinf")
-    archive.writestr("Payload/Sample.app/SC_Info/Manifest.plist",
-                     plistlib.dumps(manifest, fmt=plistlib.FMT_BINARY))
-    archive.writestr("Payload/Sample.app/Frameworks/Kit.framework/Kit",
-                     b"MACH-O-FRAMEWORK")
-    archive.writestr(
-        "Payload/Sample.app/Frameworks/Kit.framework/SC_Info/Kit.sinf",
-        b"original-kit-sinf")
-    archive.writestr("Payload/Sample.app/Assets.car", b"\x00" * 2048)
-    archive.writestr("iTunesMetadata.plist", b"stale-metadata")
+
+
+def write_sample(path, with_metadata):
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("Payload/Sample.app/Info.plist",
+                         plistlib.dumps(info, fmt=plistlib.FMT_BINARY))
+        archive.writestr("Payload/Sample.app/Sample", b"MACH-O-PAYLOAD")
+        archive.writestr("Payload/Sample.app/SC_Info/Sample.sinf",
+                         b"original-sinf")
+        archive.writestr("Payload/Sample.app/SC_Info/Manifest.plist",
+                         plistlib.dumps(manifest, fmt=plistlib.FMT_BINARY))
+        archive.writestr("Payload/Sample.app/Frameworks/Kit.framework/Kit",
+                         b"MACH-O-FRAMEWORK")
+        archive.writestr(
+            "Payload/Sample.app/Frameworks/Kit.framework/SC_Info/Kit.sinf",
+            b"original-kit-sinf")
+        archive.writestr("Payload/Sample.app/Assets.car", b"\x00" * 2048)
+        if with_metadata:
+            archive.writestr("iTunesMetadata.plist", b"stale-metadata")
+
+
+write_sample(sys.argv[1], with_metadata=False)
+write_sample(sys.argv[2], with_metadata=True)
 PY
 
 "${build_dir}/test_core" "${fixtures}"

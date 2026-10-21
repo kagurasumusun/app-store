@@ -210,6 +210,14 @@ class StoreClient {
       const HardwareIdentity& hardware, std::string_view external_version_id,
       Platform platform, const CancellationToken& token);
 
+  /// Resolves the current external version identifier through the
+  /// MZStorePlatform lookup service the store clients use to pin
+  /// redownloads (platform value `enterprisestore` for iOS, `atv9` for
+  /// Apple TV). The public catalog lookup carries no external identifier.
+  [[nodiscard]] Result<std::string> platform_external_version_id(
+      std::int64_t app_id, std::string_view country,
+      std::string_view platform_value, const CancellationToken& token);
+
   [[nodiscard]] Result<DownloadOffer> send_ent_download(
       const Account& account, const App& app,
       const HardwareIdentity& hardware, std::string_view endpoint,
