@@ -3108,6 +3108,32 @@ void test_x509(const std::string& fixtures) {
   expect(!ecdsa_signature_p1363_to_der({0x01, 0x02, 0x03}).has_value(),
          "odd-length P1363 rejected");
 
+  // Format normalization: SecKey's X9.62 algorithms return DER already,
+  // and the previous unconditional P1363 conversion mangled exactly
+  // those bytes into certificates that parse but never verify.
+  Bytes der_expected = {0x30, 0x26, 0x02, 0x01, 0x01, 0x02, 0x21, 0x00};
+  der_expected.insert(der_expected.end(), 32, 0xff);
+  auto normalized_der = ecdsa_signature_to_der(der_expected);
+  expect(normalized_der.has_value(), "DER signature normalizes");
+  if (normalized_der) {
+    expect_bytes(normalized_der.value(), der_expected,
+                 "DER signature passes through unchanged");
+  }
+  auto normalized_p1363 = ecdsa_signature_to_der(p1363);
+  expect(normalized_p1363.has_value(), "P1363 signature normalizes");
+  if (normalized_p1363) {
+    expect_bytes(normalized_p1363.value(), der_expected,
+                 "P1363 normalizes to the same DER");
+  }
+  expect(!ecdsa_signature_to_der({}).has_value(),
+         "empty signature rejected by normalizer");
+  expect(!ecdsa_signature_to_der({0x30, 0x26, 0x02}).has_value(),
+         "truncated DER rejected by normalizer");
+  Bytes der_plus_junk = der_expected;
+  der_plus_junk.push_back(0x00);
+  expect(!ecdsa_signature_to_der(der_plus_junk).has_value(),
+         "DER with trailing junk rejected by normalizer");
+
   std::size_t offset = 0;
   auto root = der_read_element(leaf_der.value(), offset);
   expect(root.has_value(), "certificate DER parses");

@@ -71,13 +71,19 @@ using CertificateSigner = std::function<Result<Bytes>(const Bytes& tbs)>;
 /// method of RFC 5280 section 4.2.1.2. Used for SKID/AKID.
 [[nodiscard]] Bytes ec_key_identifier(const Bytes& uncompressed_point);
 
-/// Converts an IEEE P1363 ECDSA signature (`r || s`, fixed width — what
-/// `SecKeyCreateSignature` and the Secure Enclave produce) into the DER
-/// ECDSA-Sig-Value X.509 expects. Platform keys never emit DER signatures,
-/// so a `CertificateSigner` backed by one must pass its output through here;
-/// feeding P1363 bytes into `build_ec_certificate` silently produces
-/// certificates no verifier accepts.
+/// Converts an IEEE P1363 ECDSA signature (`r || s`, fixed width) into the
+/// DER ECDSA-Sig-Value X.509 expects.
 [[nodiscard]] Result<Bytes> ecdsa_signature_p1363_to_der(const Bytes& p1363);
+
+/// Normalizes an ECDSA signature to DER ECDSA-Sig-Value, accepting either
+/// wire format: an already-DER signature (what `SecKeyCreateSignature`
+/// with the X9.62 message algorithms returns) passes through unchanged,
+/// P1363 `r || s` is converted. A `CertificateSigner` backed by platform
+/// keys must pass its output through here rather than assuming a format:
+/// assuming P1363 and converting a DER signature anyway mangles it into a
+/// structurally valid SEQUENCE of two garbage integers — certificates
+/// that parse everywhere and verify nowhere.
+[[nodiscard]] Result<Bytes> ecdsa_signature_to_der(const Bytes& signature);
 
 /// PEM (`-----BEGIN CERTIFICATE-----`) encoding of a DER certificate.
 [[nodiscard]] std::string pem_encode(const Bytes& der,

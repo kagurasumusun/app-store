@@ -163,16 +163,19 @@ ipashelf::CertificateSigner IPSignerForKey(SecKeyRef key) {
       return ipashelf::make_error(ipashelf::ErrorCode::kSignerUnavailable,
                                   "SecKeyCreateSignature failed");
     }
-    ipashelf::Bytes p1363;
+    ipashelf::Bytes signatureBytes;
     const auto *bytes =
         static_cast<const std::uint8_t *>(CFDataGetBytePtr(signature));
-    p1363.assign(bytes, bytes + CFDataGetLength(signature));
+    signatureBytes.assign(bytes, bytes + CFDataGetLength(signature));
     CFRelease(signature);
-    // SecKey emits IEEE P1363 (r || s); X.509 needs DER ECDSA-Sig-Value.
-    // Returning the raw P1363 bytes here used to embed 64 bytes of junk
-    // where a DER SEQUENCE belongs, so no verifier ever accepted the
-    // generated certificates.
-    return ipashelf::ecdsa_signature_p1363_to_der(p1363);
+    // The X9.62 message algorithms already return DER ECDSA-Sig-Value
+    // ("signature is in DER x9.62 encoding" — SecKey.h). This used to
+    // run those bytes through the P1363 converter anyway, mangling them
+    // into a SEQUENCE of two garbage integers: certificates that parse
+    // fine but fail every signature verification on device ("does not
+    // verify" while bringing the server up) while host-signed test
+    // fixtures kept passing. Normalize without assuming the format.
+    return ipashelf::ecdsa_signature_to_der(signatureBytes);
   };
 }
 

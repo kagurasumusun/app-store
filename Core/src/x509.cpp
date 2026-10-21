@@ -480,4 +480,28 @@ Result<DerElement> der_read_element(const Bytes& data, std::size_t& offset) {
   return element;
 }
 
+Result<Bytes> ecdsa_signature_to_der(const Bytes& signature) {
+  // A P-256 P1363 signature is exactly 64 bytes while its DER form runs
+  // 70-72 bytes for full-width components, so the 64-byte shape is
+  // checked last: anything else that parses as a DER ECDSA-Sig-Value
+  // (SEQUENCE of exactly two INTEGERs consuming the whole buffer) is
+  // already DER and passes through untouched.
+  if (signature.size() != 64 && !signature.empty()) {
+    std::size_t offset = 0;
+    auto outer = der_read_element(signature, offset);
+    if (outer && outer.value().tag == 0x30 && offset == signature.size()) {
+      const Bytes& content = outer.value().content;
+      std::size_t inner = 0;
+      auto first = der_read_element(content, inner);
+      auto second = first ? der_read_element(content, inner) : first;
+      if (second && first.value().tag == 0x02 &&
+          second.value().tag == 0x02 && !first.value().content.empty() &&
+          !second.value().content.empty() && inner == content.size()) {
+        return signature;
+      }
+    }
+  }
+  return ecdsa_signature_p1363_to_der(signature);
+}
+
 }  // namespace ipashelf
