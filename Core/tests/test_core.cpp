@@ -863,6 +863,97 @@ void test_search_and_lookup() {
   }
 }
 
+void test_search_exact_identifiers() {
+  using namespace ipashelf;
+  FakeTransport transport;
+  StoreConfiguration configuration;
+  configuration.sleep = [](std::chrono::milliseconds) {};
+  StoreClient client(transport, configuration);
+  CancellationSource source;
+
+  const std::string body =
+      "{\"resultCount\":1,\"results\":[{\"trackId\":123456789,"
+      "\"bundleId\":\"com.example.sample\",\"trackName\":\"Sample\","
+      "\"version\":\"3.1.4\",\"price\":0,\"sellerName\":\"Example\","
+      "\"kind\":\"software\",\"minimumOsVersion\":\"18.0\","
+      "\"supportedDevices\":[\"iPhone17,1\"]}]}";
+  const std::string empty = "{\"resultCount\":0,\"results\":[]}";
+
+  // A bundle ID resolves through lookup, not the keyword search (which
+  // cannot match bundle IDs as text at all).
+  transport.enqueue_response(200, body);
+  auto by_bundle = client.search("com.example.sample", "US",
+                                 Platform::kIPhone, 10, source.token());
+  expect(by_bundle.has_value(), "bundle id search succeeds");
+  if (by_bundle) {
+    expect_eq(by_bundle.value().results.size(), std::size_t{1},
+              "bundle id search result");
+  }
+  expect(transport.requests.size() == 1, "one lookup request");
+  if (transport.requests.size() == 1) {
+    const std::string& url = transport.requests.front().url;
+    expect(url.find("/lookup?") != std::string::npos,
+           "bundle id uses lookup");
+    expect(url.find("bundleId=com.example.sample") != std::string::npos,
+           "bundle id query");
+  }
+
+  // A bare numeric App Store ID does the same by id.
+  transport.enqueue_response(200, body);
+  auto by_id = client.search("123456789", "US", Platform::kIPhone, 10,
+                             source.token());
+  expect(by_id.has_value(), "numeric id search succeeds");
+  expect(transport.requests.size() == 2, "second request");
+  if (transport.requests.size() == 2) {
+    const std::string& url = transport.requests.back().url;
+    expect(url.find("/lookup?") != std::string::npos, "id uses lookup");
+    expect(url.find("id=123456789") != std::string::npos, "id query");
+  }
+
+  // A pasted product URL yields its embedded id.
+  transport.enqueue_response(200, body);
+  auto by_url = client.search(
+      "https://apps.apple.com/us/app/sample/id123456789?mt=8", "US",
+      Platform::kIPhone, 10, source.token());
+  expect(by_url.has_value(), "product url search succeeds");
+  expect(transport.requests.size() == 3, "third request");
+  if (transport.requests.size() == 3) {
+    expect(transport.requests.back().url.find("id=123456789") !=
+               std::string::npos,
+           "product url id");
+  }
+
+  // A bundle ID Apple does not know falls back to the keyword search.
+  transport.enqueue_response(200, empty);
+  transport.enqueue_response(200, body);
+  auto fallback = client.search("com.example.unknown", "US",
+                                Platform::kIPhone, 10, source.token());
+  expect(fallback.has_value(), "fallback search succeeds");
+  if (fallback) {
+    expect_eq(fallback.value().results.size(), std::size_t{1},
+              "fallback result");
+  }
+  expect(transport.requests.size() == 5, "lookup then search");
+  if (transport.requests.size() == 5) {
+    expect(transport.requests[3].url.find("/lookup?") != std::string::npos,
+           "fallback starts with lookup");
+    expect(transport.requests[4].url.find("/search?") != std::string::npos,
+           "fallback continues with search");
+  }
+
+  // A dotted non-identifier goes straight to the keyword search.
+  transport.enqueue_response(200, body);
+  auto dotted = client.search("1.2", "US", Platform::kIPhone, 10,
+                              source.token());
+  expect(dotted.has_value(), "dotted term search succeeds");
+  expect(transport.requests.size() == 6, "one keyword request for 1.2");
+  if (transport.requests.size() == 6) {
+    expect(transport.requests.back().url.find("/search?") !=
+               std::string::npos,
+           "1.2 uses keyword search");
+  }
+}
+
 void test_latest_external_version() {
   using namespace ipashelf;
   FakeTransport transport;
@@ -1143,6 +1234,60 @@ void test_artwork_urls() {
     expect(transport.requests.front().url.find("country=jp") !=
                std::string::npos,
            "artwork lookup country");
+  }
+}
+
+void test_lookup_apps() {
+  using namespace ipashelf;
+  FakeTransport transport;
+  StoreConfiguration configuration;
+  configuration.sleep = [](std::chrono::milliseconds) {};
+  StoreClient client(transport, configuration);
+  CancellationSource source;
+
+  auto empty = client.lookup_apps({}, "jp", Platform::kIPhone,
+                                  source.token());
+  expect(empty.has_value(), "empty lookup batch succeeds");
+  if (empty) expect(empty.value().empty(), "empty lookup batch is empty");
+  expect(transport.requests.empty(), "empty lookup batch makes no request");
+
+  // The endpoint answers in its own order; the caller's (ranked) order
+  // must win, and unknown ids drop out silently.
+  transport.enqueue_response(
+      200,
+      "{\"resultCount\":2,\"results\":["
+      "{\"trackId\":222,\"bundleId\":\"com.example.two\","
+      "\"trackName\":\"Two\",\"version\":\"1.0\",\"price\":0,"
+      "\"kind\":\"software\"},"
+      "{\"trackId\":111,\"bundleId\":\"com.example.one\","
+      "\"trackName\":\"One\",\"version\":\"2.0\",\"price\":1.99,"
+      "\"formattedPrice\":\"$1.99\",\"kind\":\"software\"}]}");
+  auto apps = client.lookup_apps({111, 222, 333}, "jp", Platform::kIPhone,
+                                 source.token());
+  expect(apps.has_value(), "lookup batch succeeds");
+  if (apps) {
+    expect_eq(apps.value().size(), std::size_t{2}, "two looked-up apps");
+    if (apps.value().size() == 2) {
+      expect_eq(apps.value()[0].id, std::int64_t{111},
+                "request order first");
+      expect_eq(apps.value()[0].name, std::string("One"), "first name");
+      expect(!apps.value()[0].is_free(), "paid price parsed");
+      expect_eq(apps.value()[1].id, std::int64_t{222},
+                "request order second");
+      expect(apps.value()[1].is_free(), "free price parsed");
+    }
+  }
+  expect_eq(transport.requests.size(), std::size_t{1},
+            "one batched lookup request");
+  if (!transport.requests.empty()) {
+    const std::string& url = transport.requests.front().url;
+    expect(url.find("itunes.apple.com/lookup?") != std::string::npos,
+           "lookup batch URL");
+    expect(url.find("country=jp") != std::string::npos,
+           "lookup batch country");
+    expect(url.find("111") != std::string::npos &&
+               url.find("222") != std::string::npos,
+           "lookup batch ids");
   }
 }
 
@@ -3394,11 +3539,13 @@ int main(int argc, char** argv) {
   test_login_two_factor();
   test_login_bad_password();
   test_search_and_lookup();
+  test_search_exact_identifiers();
   test_latest_external_version();
   test_catalog_throttling();
   test_download_unpinned_when_catalog_throttled();
   test_download_volume_server_error_fallback();
   test_artwork_urls();
+  test_lookup_apps();
   test_download_offer();
   test_download_fallback();
   test_download_redirect_replay();

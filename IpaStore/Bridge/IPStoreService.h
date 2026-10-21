@@ -203,6 +203,16 @@ FOUNDATION_EXPORT NSErrorDomain const IPStoreErrorDomain;
                               NSError *_Nullable error))completion
     NS_SWIFT_NAME(lookup(appID:bundleID:region:platform:completion:));
 
+/// Batched lookup preserving the order of `appIDs`; identifiers unknown
+/// in the region are absent from the result. Used to enrich ranked chart
+/// entries (which are named by id only) into full catalog records.
+- (void)lookupAppIDs:(NSArray<NSNumber *> *)appIDs
+              region:(NSString *)region
+            platform:(IPStorePlatform)platform
+          completion:(void (^)(NSArray<IPStoreApp *> *_Nullable apps,
+                               NSError *_Nullable error))completion
+    NS_SWIFT_NAME(lookupApps(appIDs:region:platform:completion:));
+
 - (void)listVersionsForApp:(IPStoreApp *)app
                    account:(IPStoreAccount *)account
                   platform:(IPStorePlatform)platform

@@ -137,6 +137,15 @@ class StoreClient {
   artwork_urls(const std::vector<std::int64_t>& app_ids,
                std::string_view region, const CancellationToken& token);
 
+  /// Resolves full catalog records for a batch of app ids via one lookup
+  /// request per hundred ids, preserving the caller's order (the public
+  /// charts feed names apps by id only, ranked; the home screen enriches
+  /// them through this). Ids Apple does not know in the region — and, for
+  /// watchOS, apps without a watch build — are simply absent.
+  [[nodiscard]] Result<std::vector<App>> lookup_apps(
+      const std::vector<std::int64_t>& app_ids, std::string_view region,
+      Platform platform, const CancellationToken& token);
+
   /// Reads the current external version id from the public App Store catalog.
   [[nodiscard]] Result<std::string> latest_external_version_id(
       const App& app, std::string_view region, Platform platform,

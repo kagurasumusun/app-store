@@ -860,6 +860,37 @@ static ipashelf::StoreClient MakeStoreClient(void) {
   });
 }
 
+- (void)lookupAppIDs:(NSArray<NSNumber *> *)appIDs
+              region:(NSString *)region
+            platform:(IPStorePlatform)platform
+          completion:(void (^)(NSArray<IPStoreApp *> *_Nullable,
+                               NSError *_Nullable))completion {
+  std::vector<std::int64_t> identifiers;
+  identifiers.reserve(appIDs.count);
+  for (NSNumber *number in appIDs) {
+    identifiers.push_back(number.longLongValue);
+  }
+  dispatch_async(_queue, ^{
+    ipashelf::StoreClient client = MakeStoreClient();
+    ipashelf::CancellationSource source;
+    auto result = client.lookup_apps(
+        identifiers,
+        TrimmedRegion(region, self->_accountStore.activeAccount).UTF8String ?: "us",
+        IPCorePlatform(platform), source.token());
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!result) {
+        completion(nil, MakeError(result.error()));
+        return;
+      }
+      NSMutableArray<IPStoreApp *> *apps = [NSMutableArray array];
+      for (const auto &app : result.value()) {
+        [apps addObject:[[IPStoreApp alloc] initWithApp:app]];
+      }
+      completion(apps, nil);
+    });
+  });
+}
+
 - (void)listVersionsForApp:(IPStoreApp *)app
                    account:(IPStoreAccount *)account
                   platform:(IPStorePlatform)platform

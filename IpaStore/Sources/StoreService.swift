@@ -183,6 +183,25 @@ final class StoreService: @unchecked Sendable {
         }
     }
 
+    /// Batched lookup in request order; identifiers unknown in the region
+    /// are absent from the result. Enriches chart entries (id only) into
+    /// full catalog records with handles.
+    func lookupApps(appIDs: [Int64],
+                    region: String,
+                    platform: StorePlatform) async throws -> [StoreApp] {
+        try await withCheckedThrowingContinuation { continuation in
+            bridge.lookupApps(appIDs: appIDs.map { NSNumber(value: $0) },
+                              region: region,
+                              platform: platform.bridge) { apps, error in
+                if let error {
+                    continuation.resume(throwing: StoreError(error))
+                } else {
+                    continuation.resume(returning: (apps ?? []).map { StoreApp(handle: $0) })
+                }
+            }
+        }
+    }
+
     func listVersions(app: StoreApp,
                       account: StoreAccount,
                       platform: StorePlatform) async throws -> [StoreVersion] {

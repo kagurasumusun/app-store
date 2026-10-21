@@ -1086,6 +1086,90 @@ Result<HttpResponse> StoreClient::send_plist_post(
       token);
 }
 
+namespace {
+
+// An exact-identifier search: the user typed (or pasted) something that
+// names one app precisely — a bundle ID, a numeric App Store ID, or an
+// App Store product URL. The iTunes keyword search cannot match any of
+// these (a bundle ID is not searchable text), so `search` resolves them
+// through the lookup endpoint instead.
+struct ExactSearchTerm {
+  std::int64_t app_id = 0;
+  std::string bundle_id;
+};
+
+bool is_ascii_digit(char c) { return c >= '0' && c <= '9'; }
+
+bool parse_app_id(std::string_view digits, std::int64_t& value) {
+  if (digits.empty() || digits.size() > 15) return false;
+  std::int64_t parsed = 0;
+  const char* first = digits.data();
+  const char* last = first + digits.size();
+  const auto result = std::from_chars(first, last, parsed);
+  if (result.ec != std::errc() || result.ptr != last || parsed <= 0) {
+    return false;
+  }
+  value = parsed;
+  return true;
+}
+
+std::optional<ExactSearchTerm> classify_exact_search_term(
+    std::string_view raw_term) {
+  const std::string term = trim(raw_term);
+  if (term.empty()) return std::nullopt;
+
+  // App Store product URL: https://apps.apple.com/jp/app/<slug>/id123456
+  if (term.find("apps.apple.com") != std::string::npos ||
+      term.find("itunes.apple.com") != std::string::npos) {
+    std::size_t at = 0;
+    while ((at = term.find("/id", at)) != std::string::npos) {
+      const std::size_t digits_begin = at + 3;
+      std::size_t digits_end = digits_begin;
+      while (digits_end < term.size() && is_ascii_digit(term[digits_end])) {
+        ++digits_end;
+      }
+      std::int64_t app_id = 0;
+      if (parse_app_id(std::string_view(term).substr(
+                           digits_begin, digits_end - digits_begin),
+                       app_id)) {
+        return ExactSearchTerm{app_id, {}};
+      }
+      at = digits_begin;
+    }
+    return std::nullopt;
+  }
+
+  // Bare numeric App Store ID.
+  if (std::all_of(term.begin(), term.end(), is_ascii_digit)) {
+    std::int64_t app_id = 0;
+    if (parse_app_id(term, app_id)) return ExactSearchTerm{app_id, {}};
+    return std::nullopt;
+  }
+
+  // Bundle ID: dot-separated labels of letters, digits, hyphens and
+  // underscores, with at least one dot and one letter (so version
+  // numbers like "1.2" and plain names still go to the keyword search).
+  bool has_dot = false;
+  bool has_letter = false;
+  for (std::size_t i = 0; i < term.size(); ++i) {
+    const char c = term[i];
+    if (c == '.') {
+      if (i == 0 || i + 1 == term.size() || term[i - 1] == '.') {
+        return std::nullopt;
+      }
+      has_dot = true;
+    } else if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+      has_letter = true;
+    } else if (!is_ascii_digit(c) && c != '-' && c != '_') {
+      return std::nullopt;
+    }
+  }
+  if (has_dot && has_letter) return ExactSearchTerm{0, term};
+  return std::nullopt;
+}
+
+}  // namespace
+
 std::string build_search_url(const SearchQuery& query) {
   auto entity = search_entity(query.platform);
   const std::string entity_value =
@@ -1108,6 +1192,26 @@ Result<SearchResults> StoreClient::search(const SearchQuery& query,
                                           const CancellationToken& token) {
   if (trim(query.term).empty()) {
     return make_error(ErrorCode::kInvalidArgument, "search term is empty");
+  }
+  // Bundle IDs, numeric App Store IDs and product URLs name one exact
+  // app; resolve them through lookup. Only a plain "not found" falls
+  // back to the keyword search below — a dotted app name might still be
+  // what the user meant.
+  if (const auto exact = classify_exact_search_term(query.term)) {
+    auto app = lookup(exact->app_id, exact->bundle_id, query.region,
+                      query.platform, token);
+    if (app) {
+      SearchResults results;
+      if (!query.free_only.has_value() ||
+          app.value().is_free() == query.free_only.value()) {
+        results.results.push_back(app.value());
+      }
+      results.count = static_cast<int>(results.results.size());
+      return results;
+    }
+    if (app.error().code != ErrorCode::kAppNotFound) {
+      return app.error();
+    }
   }
   const std::string url = build_search_url(query);
   HttpRequest request;
@@ -1295,6 +1399,72 @@ Result<std::unordered_map<std::int64_t, std::string>> StoreClient::artwork_urls(
       }
       if (!artwork.empty()) output[*id] = std::move(artwork);
     }
+  }
+  return output;
+}
+
+Result<std::vector<App>> StoreClient::lookup_apps(
+    const std::vector<std::int64_t>& app_ids, std::string_view region,
+    Platform platform, const CancellationToken& token) {
+  std::vector<App> output;
+  if (app_ids.empty()) return output;
+  auto entity = lookup_entity(platform);
+  if (!entity) return entity.error();
+  const std::string country = region_or_default(region);
+  // Results come back in Apple's order, not the caller's; index them by
+  // id and re-emit in request order so ranked lists stay ranked.
+  std::unordered_map<std::int64_t, App> by_id;
+  constexpr std::size_t kChunkSize = 100;
+  for (std::size_t start = 0; start < app_ids.size(); start += kChunkSize) {
+    const std::size_t end = std::min(app_ids.size(), start + kChunkSize);
+    std::string joined;
+    for (std::size_t index = start; index < end; ++index) {
+      if (app_ids[index] <= 0) continue;
+      if (!joined.empty()) joined += ",";
+      joined += std::to_string(app_ids[index]);
+    }
+    if (joined.empty()) continue;
+    std::vector<std::pair<std::string, std::string>> query = {
+        {"entity", entity.value()},
+        {"limit", "200"},
+        {"media", "software"},
+        {"id", joined},
+        {"country", country},
+    };
+    HttpRequest request;
+    request.method = "GET";
+    request.url = "https://" + std::string(kITunesHost) + "/lookup?" +
+                  build_query(query);
+    request.headers.set("Accept", "application/json");
+    request.headers.set("User-Agent", configuration_.user_agent);
+    auto response = transport_.send(request, token);
+    if (!response) return response.error();
+    if (response.value().status != 200) {
+      return Error{ErrorCode::kHttpStatus,
+                   "App Store lookup returned HTTP " +
+                       std::to_string(response.value().status),
+                   response.value().status};
+    }
+    auto results = parse_search_document(
+        std::string_view(
+            reinterpret_cast<const char*>(response.value().body.data()),
+            response.value().body.size()));
+    if (!results) return results.error();
+    for (auto& app : results.value().results) {
+      if (app.id > 0) by_id[app.id] = std::move(app);
+    }
+  }
+  output.reserve(app_ids.size());
+  for (const std::int64_t id : app_ids) {
+    const auto found = by_id.find(id);
+    if (found == by_id.end()) continue;
+    if (platform == Platform::kWatchOS &&
+        std::find(found->second.platforms.begin(),
+                  found->second.platforms.end(), Platform::kWatchOS) ==
+            found->second.platforms.end()) {
+      continue;
+    }
+    output.push_back(found->second);
   }
   return output;
 }
