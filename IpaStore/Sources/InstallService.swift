@@ -134,7 +134,11 @@ final class InstallService {
                     phase = .failed(String(localized: "The install server answered with an unexpected response."))
                     return
                 }
-                UIApplication.shared.open(installURL)
+                // Explicit completion-handler form: in an async context
+                // the iOS 27 SDK otherwise resolves `open` to its async
+                // overload and rejects the un-awaited call.
+                UIApplication.shared.open(installURL, options: [:],
+                                          completionHandler: nil)
             } catch let error as URLError where Self.isCertificateError(error) {
                 // The static trust check passed but TLS disagrees (the
                 // trust toggle was just turned off, or the leaf no longer
