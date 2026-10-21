@@ -92,7 +92,7 @@ with open(sys.argv[1], "wb") as handle:
     plistlib.dump(document, handle, fmt=plistlib.FMT_BINARY, sort_keys=False)
 PY
 
-python3 - "${fixtures}/sample.ipa" "${fixtures}/sample-with-metadata.ipa" <<'PY'
+python3 - "${fixtures}/sample.ipa" "${fixtures}/sample-with-metadata.ipa" "${fixtures}/sample-store.ipa" "${fixtures}/sample-store-zip64.ipa" <<'PY'
 import plistlib
 import sys
 import zipfile
@@ -113,20 +113,22 @@ manifest = {
 }
 
 
-def write_sample(path, with_metadata):
+def write_sample(path, with_metadata, with_sinf_files=True):
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("Payload/Sample.app/Info.plist",
                          plistlib.dumps(info, fmt=plistlib.FMT_BINARY))
         archive.writestr("Payload/Sample.app/Sample", b"MACH-O-PAYLOAD")
-        archive.writestr("Payload/Sample.app/SC_Info/Sample.sinf",
-                         b"original-sinf")
+        if with_sinf_files:
+            archive.writestr("Payload/Sample.app/SC_Info/Sample.sinf",
+                             b"original-sinf")
         archive.writestr("Payload/Sample.app/SC_Info/Manifest.plist",
                          plistlib.dumps(manifest, fmt=plistlib.FMT_BINARY))
         archive.writestr("Payload/Sample.app/Frameworks/Kit.framework/Kit",
                          b"MACH-O-FRAMEWORK")
-        archive.writestr(
-            "Payload/Sample.app/Frameworks/Kit.framework/SC_Info/Kit.sinf",
-            b"original-kit-sinf")
+        if with_sinf_files:
+            archive.writestr(
+                "Payload/Sample.app/Frameworks/Kit.framework/SC_Info/Kit.sinf",
+                b"original-kit-sinf")
         archive.writestr("Payload/Sample.app/Assets.car", b"\x00" * 2048)
         if with_metadata:
             archive.writestr("iTunesMetadata.plist", b"stale-metadata")
@@ -134,6 +136,27 @@ def write_sample(path, with_metadata):
 
 write_sample(sys.argv[1], with_metadata=False)
 write_sample(sys.argv[2], with_metadata=True)
+# The store's own shape: SC_Info declares the sinf slots in a manifest,
+# but no sinf files and no metadata document exist until patched in.
+write_sample(sys.argv[3], with_metadata=False, with_sinf_files=False)
+
+# The zip64-tailed variant: identical entries, but the archive ends with a
+# zip64 end-of-central-directory record + locator, as larger store packages
+# do. Built by re-wrapping the store fixture's tail by hand.
+import struct
+
+data = open(sys.argv[3], "rb").read()
+eocd = data.rfind(b"PK\x05\x06")
+(_, _, _, entries, _, cd_size, cd_offset, comment_len) = struct.unpack_from(
+    "<IHHHHIIH", data, eocd)
+comment = data[eocd + 22:eocd + 22 + comment_len]
+prefix = data[:eocd]
+record = struct.pack("<IQHHIIQQQQ", 0x06064B50, 44, 789, 45, 0, 0,
+                     entries, entries, cd_size, cd_offset)
+locator = struct.pack("<IIQI", 0x07064B50, 0, len(prefix), 1)
+tail = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 0xFFFF, 0xFFFF,
+                   0xFFFFFFFF, 0xFFFFFFFF, comment_len) + comment
+open(sys.argv[4], "wb").write(prefix + record + locator + tail)
 PY
 
 "${build_dir}/test_core" "${fixtures}"

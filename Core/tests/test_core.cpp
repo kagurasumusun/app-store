@@ -2373,6 +2373,196 @@ void test_ipa_patch(const std::string& fixtures) {
   marker << "ok";
 }
 
+// A store package declares its FairPlay slots in SC_Info/Manifest.plist
+// but carries neither the sinf files nor a metadata document, so patching
+// appends: every original byte stays, and the injected entries carry their
+// CRC and sizes in their local headers like the store's own records — not
+// the data-descriptor form (zeroed local CRC/sizes) that a streaming
+// extractor can only pass by decompressing blind. This walks the produced
+// archive header by header to prove the form.
+void test_ipa_patch_append(const std::string& fixtures) {
+  using namespace ipashelf;
+  const std::string source = fixtures + "/sample-store.ipa";
+  auto info = inspect_ipa(source);
+  expect(info.has_value(), "store-shaped IPA inspects");
+  if (!info) return;
+  expect_eq(info.value().sinf_paths.size(), std::size_t{2},
+            "store-shaped manifest paths");
+  expect(info.value().sinf_files.empty(), "store-shaped has no sinf files");
+
+  std::vector<Sinf> sinfs;
+  sinfs.push_back(Sinf{0, bytes_of("appended-sinf-1")});
+  sinfs.push_back(Sinf{1, bytes_of("appended-sinf-2")});
+  auto sinf_entries = resolve_sinf_entries(info.value(), sinfs);
+  expect(sinf_entries.has_value(), "append sinf entries resolve");
+  if (!sinf_entries) return;
+
+  IpaPatchOptions options;
+  options.source_path = source;
+  options.destination_path = fixtures + "/patched-append.ipa";
+  PlistValue metadata = PlistValue::dictionary();
+  metadata.set("itemId", PlistValue::integer(424242));
+  options.metadata = metadata;
+  options.sinf_entries = sinf_entries.value();
+
+  CancellationSource token;
+  const Status status = write_patched_ipa(options, token.token());
+  expect(status.ok(), "store-shaped IPA patches");
+  if (!status) return;
+
+  const auto read_file = [](const std::string& path) {
+    std::ifstream stream(path, std::ios::binary);
+    return Bytes(std::istreambuf_iterator<char>(stream),
+                 std::istreambuf_iterator<char>());
+  };
+  const Bytes original = read_file(source);
+  const Bytes patched = read_file(options.destination_path);
+  expect(!original.empty() && !patched.empty(), "archives load");
+
+  const auto u16 = [](const Bytes& bytes, std::size_t at) {
+    return static_cast<std::uint16_t>(bytes[at] | (bytes[at + 1] << 8));
+  };
+  const auto u32 = [](const Bytes& bytes, std::size_t at) {
+    return static_cast<std::uint32_t>(bytes[at]) |
+           (static_cast<std::uint32_t>(bytes[at + 1]) << 8) |
+           (static_cast<std::uint32_t>(bytes[at + 2]) << 16) |
+           (static_cast<std::uint32_t>(bytes[at + 3]) << 24);
+  };
+  const auto find_eocd = [&](const Bytes& bytes) -> std::size_t {
+    if (bytes.size() < 22) return bytes.size();
+    for (std::size_t at = bytes.size() - 22;; --at) {
+      if (u32(bytes, at) == 0x06054b50 &&
+          at + 22 + u16(bytes, at + 20) == bytes.size()) {
+        return at;
+      }
+      if (at == 0) return bytes.size();
+    }
+  };
+
+  const std::size_t source_eocd = find_eocd(original);
+  const std::size_t patched_eocd = find_eocd(patched);
+  expect(source_eocd < original.size() && patched_eocd < patched.size(),
+         "end records found");
+  if (source_eocd >= original.size() || patched_eocd >= patched.size()) {
+    return;
+  }
+  const std::size_t source_cd = u32(original, source_eocd + 16);
+  const std::size_t source_cd_size = u32(original, source_eocd + 12);
+  const std::size_t patched_cd = u32(patched, patched_eocd + 16);
+  expect_eq(u16(patched, patched_eocd + 10), std::uint16_t{8},
+            "appended entry count");
+
+  // Every byte the store wrote before its central directory is preserved,
+  // and its central directory reappears verbatim behind the additions.
+  expect(patched.size() > source_cd &&
+             std::equal(original.begin(), original.begin() + source_cd,
+                        patched.begin()),
+         "original package bytes preserved");
+  expect(patched_cd + source_cd_size <= patched.size() &&
+             std::equal(original.begin() + source_cd,
+                        original.begin() + source_cd + source_cd_size,
+                        patched.begin() + patched_cd),
+         "original central directory preserved verbatim");
+
+  // Walk the archive the way a streaming extractor does: local headers
+  // only, sizes trusted, no descriptors to trip over.
+  std::size_t at = 0;
+  std::size_t walked = 0;
+  bool clean_walk = true;
+  std::map<std::string, std::size_t> local_offsets;
+  while (at < patched_cd) {
+    if (u32(patched, at) != 0x04034b50) {
+      clean_walk = false;
+      break;
+    }
+    const std::uint16_t flags = u16(patched, at + 6);
+    const std::uint32_t csize = u32(patched, at + 18);
+    const std::uint16_t name_len = u16(patched, at + 26);
+    const std::uint16_t extra_len = u16(patched, at + 28);
+    const std::string name(
+        reinterpret_cast<const char*>(&patched[at + 30]), name_len);
+    local_offsets[name] = at;
+    if ((flags & 0x8) != 0) {
+      clean_walk = false;
+      break;
+    }
+    at += 30u + name_len + extra_len + csize;
+    ++walked;
+  }
+  expect(clean_walk, "local headers walk without data descriptors");
+  expect_eq(at, patched_cd, "walk lands exactly on the central directory");
+  expect_eq(walked, std::size_t{8}, "all entries walked");
+
+  // The injected records carry complete headers like the store's own.
+  for (const auto& [path, data] : sinf_entries.value()) {
+    const auto found = local_offsets.find(path);
+    expect(found != local_offsets.end(), "sinf local record present");
+    if (found == local_offsets.end()) continue;
+    const std::size_t record_at = found->second;
+    expect_eq(u16(patched, record_at + 6), std::uint16_t{0x0800},
+              "sinf local flags are UTF-8 only");
+    expect_eq(u32(patched, record_at + 22),
+              static_cast<std::uint32_t>(data.size()),
+              "sinf local uncompressed size present");
+    expect(u32(patched, record_at + 14) != 0, "sinf local CRC present");
+  }
+  expect(local_offsets.count("iTunesMetadata.plist") == 1,
+         "metadata local record present");
+
+  expect(verify_ipa_fairplay(options.destination_path,
+                             sinf_entries.value())
+             .ok(),
+         "appended IPA verifies against its sinf blobs");
+  auto inspected = inspect_ipa(options.destination_path);
+  expect(inspected.has_value() && inspected.value().sinf_files.size() == 2,
+         "appended IPA inspects with both sinf files");
+
+  // The zip64-tailed variant goes through the same append: original
+  // bytes preserved, zip64 record carried forward with fresh totals.
+  const std::string source64 = fixtures + "/sample-store-zip64.ipa";
+  IpaPatchOptions options64 = options;
+  options64.source_path = source64;
+  options64.destination_path = fixtures + "/patched-append-zip64.ipa";
+  const Status status64 = write_patched_ipa(options64, token.token());
+  expect(status64.ok(), "zip64 store-shaped IPA patches");
+  if (status64) {
+    const Bytes original64 = read_file(source64);
+    const Bytes patched64 = read_file(options64.destination_path);
+    const std::size_t eocd64 = find_eocd(original64);
+    expect(eocd64 < original64.size(), "zip64 source end record found");
+    if (eocd64 < original64.size()) {
+      // The zip64 record sits between the central directory and the
+      // 20-byte locator + classic EOCD.
+      const std::size_t record_at = eocd64 - 20 - 56;
+      const std::size_t source_cd64 =
+          static_cast<std::size_t>(u32(original64, record_at + 48)) |
+          (static_cast<std::size_t>(u32(original64, record_at + 52)) << 32);
+      expect(patched64.size() > source_cd64 &&
+                 std::equal(original64.begin(),
+                            original64.begin() + source_cd64,
+                            patched64.begin()),
+             "zip64 original package bytes preserved");
+      const std::size_t patched_eocd64 = find_eocd(patched64);
+      expect(patched_eocd64 < patched64.size(),
+             "zip64 patched end record found");
+      if (patched_eocd64 < patched64.size()) {
+        const std::size_t new_record_at = patched_eocd64 - 20 - 56;
+        expect_eq(u32(patched64, new_record_at), 0x06064b50u,
+                  "zip64 record carried forward");
+        const std::uint64_t total64 =
+            static_cast<std::uint64_t>(u32(patched64, new_record_at + 32)) |
+            (static_cast<std::uint64_t>(u32(patched64, new_record_at + 36))
+             << 32);
+        expect_eq(total64, std::uint64_t{8}, "zip64 entry count updated");
+      }
+    }
+    expect(verify_ipa_fairplay(options64.destination_path,
+                               sinf_entries.value())
+               .ok(),
+           "zip64 appended IPA verifies");
+  }
+}
+
 // The patcher must copy untouched entries byte-verbatim, Unix mode bits
 // included: the main executable's exec bit and framework symlinks are
 // part of what iOS validates, and a rebuild that strips them produces
@@ -3799,6 +3989,7 @@ int main(int argc, char** argv) {
   test_plist_binary_write(fixtures);
   test_account_json();
   test_ipa_patch(fixtures);
+  test_ipa_patch_append(fixtures);
   test_ipa_patch_preserves_attributes(fixtures);
   test_url();
   test_bag();
